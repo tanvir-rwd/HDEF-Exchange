@@ -977,7 +977,11 @@ const AppContent: React.FC = () => {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (!session?.user) {
+      if (session?.user) {
+        // Fetch user profile or set user state
+        // Assuming there is a function to fetch user data
+        fetchUserData(session.user.id);
+      } else {
         setUser(null);
       }
     });
@@ -1156,8 +1160,8 @@ const AppContent: React.FC = () => {
     }
   };
 
-  const fetchUserData = async (userId: number) => {
-    if (!userId || isNaN(userId)) {
+  const fetchUserData = async (userId: string | number) => {
+    if (!userId) {
       console.warn("Invalid userId provided to fetchUserData", userId);
       return;
     }
@@ -1254,6 +1258,22 @@ const AppContent: React.FC = () => {
     }
   };
 
+  const handleResendOTP = async () => {
+    try {
+      const { error } = await supabase.auth.resend({
+        type: 'signup',
+        email: authForm.email,
+        options: {
+          emailRedirectTo: `${window.location.origin}/auth/callback`,
+        },
+      });
+      if (error) throw error;
+      showNotify("Verification code resent successfully.", 'success');
+    } catch (err: any) {
+      showNotify(err.message || "Failed to resend code", 'error');
+    }
+  };
+
   const handleVerifyOTP = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -1263,9 +1283,30 @@ const AppContent: React.FC = () => {
         type: 'signup',
       });
       if (error) throw error;
-      showNotify("Email verified successfully.", 'success');
-      setAuthConfig({ ...authConfig, view: 'login' });
-      setAuthForm({ ...authForm, otp: '' });
+      
+      // Now sign the user in
+      const { error: loginError } = await supabase.auth.signInWithPassword({
+        email: authForm.email,
+        password: authForm.password
+      });
+      if (loginError) throw loginError;
+
+      // Now fetch user data
+      const res = await apiFetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: authForm.email, password: authForm.password, role: authConfig.role })
+      });
+      const userData = await res.json();
+      if (userData.success) {
+        setUser(userData.user);
+        showNotify(`Successfully verified and logged in`, 'success');
+        setAuthConfig({ ...authConfig, isOpen: false });
+        setActiveTab(userData.user.role === 'admin' ? 'admin' : 'dashboard');
+        setAuthForm({ name: '', email: '', password: '', otp: '', newPassword: '', oldPassword: '' });
+      } else {
+        showNotify(userData.message || "Login failed after verification", 'error');
+      }
     } catch (err: any) {
       showNotify(err.message || "Verification failed", 'error');
     }
@@ -2708,6 +2749,13 @@ const AppContent: React.FC = () => {
                     Verify Email
                   </button>
                   <div className="mt-6 text-center">
+                    <button 
+                      type="button"
+                      onClick={handleResendOTP}
+                      className="text-sm text-emerald-600 hover:text-emerald-700 font-medium transition-colors mr-4"
+                    >
+                      Resend Code
+                    </button>
                     <button 
                       type="button"
                       onClick={() => setAuthConfig({ ...authConfig, view: 'login' })}
