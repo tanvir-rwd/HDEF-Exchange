@@ -48,13 +48,20 @@ const baseApiFetch = async (url: string, options: RequestInit = {}, userId?: num
     headers['x-user-id'] = userId.toString();
   }
   
+  // Prevent caching for GET requests to ensure fresh data
+  const fetchOptions: RequestInit = {
+    ...options,
+    headers,
+    cache: options.method === 'GET' || !options.method ? 'no-store' : options.cache
+  };
+  
   // Use relative URLs if possible, fallback to absolute if needed
   // In most browser environments, relative URLs work fine.
   const absoluteUrl = url.startsWith('http') ? url : url;
   
-  console.log(`Fetching: ${absoluteUrl}`, options);
+  console.log(`Fetching: ${absoluteUrl}`, fetchOptions);
   try {
-    const response = await fetch(absoluteUrl, { ...options, headers });
+    const response = await fetch(absoluteUrl, fetchOptions);
     console.log(`Response from ${absoluteUrl}: ${response.status} ${response.statusText}`);
     return response;
   } catch (error) {
@@ -1102,6 +1109,7 @@ const AppContent: React.FC = () => {
     fetchProducts();
     fetchPaymentMode();
     fetchPaymentMethods();
+    fetchEnabledPaymentMethods();
   }, []);
 
   useEffect(() => {
@@ -1125,7 +1133,7 @@ const AppContent: React.FC = () => {
   };
 
   useEffect(() => {
-    if (user?.role === 'admin' && adminView === 'orders') {
+    if (user?.role === 'admin' && (adminView === 'orders' || adminView === 'payment-verification' || adminView === 'overview')) {
       fetchAllTransactions();
     }
   }, [user, adminView]);
@@ -1160,6 +1168,16 @@ const AppContent: React.FC = () => {
       setPaymentMode(data.paymentMode);
     } catch (err) {
       console.error("Failed to load payment mode");
+    }
+  };
+
+  const fetchEnabledPaymentMethods = async () => {
+    try {
+      const res = await apiFetch('/api/settings/enabled-payment-methods');
+      const data = await res.json();
+      setEnabledPaymentMethods(data.enabledMethods || []);
+    } catch (err) {
+      console.error("Failed to load enabled payment methods");
     }
   };
 
@@ -1443,10 +1461,17 @@ const AppContent: React.FC = () => {
   };
 
   const handleLogout = async () => {
-    await supabase.auth.signOut();
-    setUser(null);
-    setActiveTab('store');
-    showNotify("Logged out successfully", 'success');
+    try {
+      await supabase.auth.signOut();
+    } catch (err) {
+      console.error("Logout error:", err);
+    } finally {
+      setUser(null);
+      setActiveTab('store');
+      setAdminView('products');
+      setDashboardView('overview');
+      showNotify("Logged out successfully", 'success');
+    }
   };
 
   const handleApproveSellRequest = async (productId: number) => {
@@ -2611,11 +2636,28 @@ const AppContent: React.FC = () => {
                                   <input 
                                     type="checkbox"
                                     checked={enabledPaymentMethods.includes(method.id)}
-                                    onChange={(e) => {
-                                      if (e.target.checked) {
-                                        setEnabledPaymentMethods([...enabledPaymentMethods, method.id]);
-                                      } else {
-                                        setEnabledPaymentMethods(enabledPaymentMethods.filter(id => id !== method.id));
+                                    onChange={async (e) => {
+                                      const isEnabled = e.target.checked;
+                                      const newMethods = isEnabled 
+                                        ? [...enabledPaymentMethods, method.id]
+                                        : enabledPaymentMethods.filter(id => id !== method.id);
+                                      
+                                      setEnabledPaymentMethods(newMethods);
+                                      
+                                      try {
+                                        const res = await apiFetch('/api/admin/settings/enabled-payment-methods', {
+                                          method: 'POST',
+                                          headers: { 'Content-Type': 'application/json' },
+                                          body: JSON.stringify({ methods: newMethods })
+                                        });
+                                        const data = await res.json();
+                                        if (!data.success) {
+                                          setEnabledPaymentMethods(enabledPaymentMethods);
+                                          showNotify(data.message || "Failed to update payment methods", 'error');
+                                        }
+                                      } catch (err) {
+                                        setEnabledPaymentMethods(enabledPaymentMethods);
+                                        showNotify("Failed to update payment methods", 'error');
                                       }
                                     }}
                                     className="w-5 h-5 text-emerald-600 rounded border-slate-300 focus:ring-emerald-500"

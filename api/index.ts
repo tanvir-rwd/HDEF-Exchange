@@ -38,20 +38,35 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
 app.use((req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
   console.log(`Request: ${req.method} ${req.url}`);
   next();
 });
 
 // Helper to get settings
 const getSetting = async (key: string, defaultValue: any) => {
-  const { data, error } = await getSupabase().from('settings').select('value').eq('key', key).single();
-  if (error || !data) return defaultValue;
-  return data.value;
+  const { data, error } = await getSupabase().from('settings').select('value').eq('key', key).limit(1);
+  if (error || !data || data.length === 0) return defaultValue;
+  return data[0].value;
 };
 
 // Helper to update settings
 const updateSetting = async (key: string, value: any) => {
-  const { error } = await getSupabase().from('settings').upsert({ key, value });
+  const { data: existing } = await getSupabase().from('settings').select('id').eq('key', key).limit(1);
+  let error;
+  if (existing && existing.length > 0) {
+    const res = await getSupabase().from('settings').update({ value }).eq('key', key);
+    error = res.error;
+  } else {
+    const res = await getSupabase().from('settings').insert([{ key, value }]);
+    error = res.error;
+  }
+  
+  if (error) {
+    console.error(`Error updating setting ${key}:`, error);
+  }
   return !error;
 };
 
@@ -83,11 +98,34 @@ const requireAdmin = async (req: express.Request, res: express.Response, next: e
     res.json({ paymentMode });
   });
 
+  app.get("/api/settings/enabled-payment-methods", async (req, res) => {
+    const enabledMethods = await getSetting('enabledPaymentMethods', []);
+    res.json({ enabledMethods });
+  });
+
+  app.post("/api/admin/settings/enabled-payment-methods", requireAdmin, async (req, res) => {
+    const { methods } = req.body;
+    if (Array.isArray(methods)) {
+      const success = await updateSetting('enabledPaymentMethods', methods);
+      if (success) {
+        res.json({ success: true, enabledMethods: methods });
+      } else {
+        res.status(500).json({ success: false, message: "Failed to update setting in database" });
+      }
+    } else {
+      res.status(400).json({ success: false, message: "Invalid methods array" });
+    }
+  });
+
   app.post("/api/admin/settings/payment-mode", requireAdmin, async (req, res) => {
     const { mode } = req.body;
     if (mode === 'coin' || mode === 'manual') {
-      await updateSetting('paymentMode', mode);
-      res.json({ success: true, paymentMode: mode });
+      const success = await updateSetting('paymentMode', mode);
+      if (success) {
+        res.json({ success: true, paymentMode: mode });
+      } else {
+        res.status(500).json({ success: false, message: "Failed to update setting in database" });
+      }
     } else {
       res.status(400).json({ success: false, message: "Invalid payment mode" });
     }
@@ -678,7 +716,7 @@ const requireAdmin = async (req: express.Request, res: express.Response, next: e
       price_type,
       payment_mode: payment_mode || 'coin',
       category: category || "Uncategorized",
-      seller_id,
+      seller_id: seller_id ? parseId(seller_id) : null,
       status: 'pending'
     };
     
