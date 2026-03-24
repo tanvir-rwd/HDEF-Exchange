@@ -40,14 +40,39 @@ import { User, Product, Transaction, PaymentMethod } from './types';
 import { ImageUpload } from './components/ImageUpload';
 import { ProfileImageUpload } from './components/ProfileImageUpload';
 
-const baseApiFetch = async (url: string, options: RequestInit = {}, userId?: number) => {
+const baseApiFetch = async (url: string, options: RequestInit = {}, userId?: number | string) => {
   const headers: Record<string, string> = {
     ...(options.headers as Record<string, string>),
   };
   if (userId) {
     headers['x-user-id'] = userId.toString();
   }
-  return fetch(url, { ...options, headers });
+  
+  // Use relative URLs if possible, fallback to absolute if needed
+  // In most browser environments, relative URLs work fine.
+  const absoluteUrl = url.startsWith('http') ? url : url;
+  
+  console.log(`Fetching: ${absoluteUrl}`, options);
+  try {
+    const response = await fetch(absoluteUrl, { ...options, headers });
+    console.log(`Response from ${absoluteUrl}: ${response.status} ${response.statusText}`);
+    return response;
+  } catch (error) {
+    console.error(`Fetch error for ${absoluteUrl}:`, error);
+    // If relative fetch failed, try absolute with window.location.origin as a last resort
+    if (!url.startsWith('http')) {
+      try {
+        const fallbackUrl = `${window.location.origin}${url}`;
+        console.log(`Retrying with absolute URL: ${fallbackUrl}`);
+        const response = await fetch(fallbackUrl, { ...options, headers });
+        return response;
+      } catch (fallbackError) {
+        console.error(`Fallback fetch error for ${url}:`, fallbackError);
+        throw fallbackError;
+      }
+    }
+    throw error;
+  }
 };
 
 interface ErrorBoundaryProps {
@@ -100,7 +125,7 @@ export interface CartItem {
   quantity: number;
 }
 
-const SellSection = ({ user, showNotify, paymentMode, apiFetch }: { user: User, showNotify: (msg: string, type: 'success' | 'error') => void, paymentMode: 'coin' | 'manual', apiFetch: any }) => {
+const SellSection = ({ user, showNotify, paymentMode, apiFetch, fetchProducts }: { user: User, showNotify: (msg: string, type: 'success' | 'error') => void, paymentMode: 'coin' | 'manual', apiFetch: any, fetchProducts: () => Promise<void> }) => {
   const [formData, setFormData] = useState({
     name: '',
     description: '',
@@ -133,6 +158,7 @@ const SellSection = ({ user, showNotify, paymentMode, apiFetch }: { user: User, 
       if (data.success) {
         showNotify("Sell request submitted successfully!", "success");
         setFormData({ name: '', description: '', image_urls: [], quantity: 0, quantity_unit: 1, price: 0, price_type: 'BDT', category: '' });
+        if (fetchProducts) fetchProducts();
       } else {
         showNotify(data.message || "Failed to submit sell request", "error");
       }
@@ -165,18 +191,18 @@ const SellSection = ({ user, showNotify, paymentMode, apiFetch }: { user: User, 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <div>
             <label className="block text-sm font-bold text-slate-700 mb-2">Total Quantity</label>
-            <input type="number" value={formData.quantity} onChange={(e) => setFormData({...formData, quantity: parseInt(e.target.value)})} className="input-field" required min="1" />
+            <input type="number" value={formData.quantity || 0} onChange={(e) => setFormData({...formData, quantity: parseInt(e.target.value) || 0})} className="input-field" required min="1" />
           </div>
           <div>
             <label className="block text-sm font-bold text-slate-700 mb-2">Quantity per Unit</label>
-            <input type="number" value={formData.quantity_unit} onChange={(e) => setFormData({...formData, quantity_unit: parseInt(e.target.value)})} className="input-field" required min="1" />
+            <input type="number" value={formData.quantity_unit || 1} onChange={(e) => setFormData({...formData, quantity_unit: parseInt(e.target.value) || 1})} className="input-field" required min="1" />
           </div>
           <div>
             <label className="block text-sm font-bold text-slate-700 mb-2">
               {paymentMode === 'coin' ? 'Coin Price' : `Price (${formData.price_type})`} (per Unit)
             </label>
             <div className="flex gap-2">
-              <input type="number" value={formData.price} onChange={(e) => setFormData({...formData, price: parseInt(e.target.value)})} className="input-field flex-grow" required min="1" />
+              <input type="number" value={formData.price || 0} onChange={(e) => setFormData({...formData, price: parseFloat(e.target.value) || 0})} className="input-field flex-grow" required min="1" />
               {paymentMode === 'manual' && (
                 <select 
                   value={formData.price_type} 
@@ -304,8 +330,8 @@ const CoinTransferView = ({ user, transferForm, setTransferForm, showNotify, fet
               required
               type="number" 
               min="1"
-              value={transferForm.amount} 
-              onChange={(e) => setTransferForm({...transferForm, amount: parseInt(e.target.value)})} 
+              value={transferForm.amount || 0} 
+              onChange={(e) => setTransferForm({...transferForm, amount: parseInt(e.target.value) || 0})} 
               className="input-field !pl-10" 
               placeholder="0"
             />
@@ -509,7 +535,7 @@ const PaymentMethodsView = ({ paymentMethods, fetchPaymentMethods, showNotify, a
 const PaymentVerificationView = ({ transactions, fetchTransactions, showNotify, apiFetch }: any) => {
   const pendingTransactions = transactions.filter((t: Transaction) => t.status === 'pending_manual_payment');
 
-  const handleAction = async (id: number, action: 'verify' | 'reject') => {
+  const handleAction = async (id: number | string, action: 'verify' | 'reject') => {
     try {
       const res = await apiFetch(`/api/admin/transactions/${id}/${action}`, { method: 'POST' });
       const data = await res.json();
@@ -803,7 +829,7 @@ const UserManagementView = ({ showNotify, apiFetch }: { showNotify: (msg: string
                   <div className="flex items-center gap-2">
                     <input 
                       type="number" 
-                      defaultValue={u.wallet_balance} 
+                      defaultValue={u.wallet_balance || 0} 
                       onBlur={(e) => {
                         const val = parseFloat(e.target.value);
                         if (!isNaN(val) && val >= 0 && val !== u.wallet_balance) {
@@ -1202,7 +1228,29 @@ const AppContent: React.FC = () => {
       const userData = await userRes.json();
       const transData = await transRes.json();
       
-      if (userData) setUser(userData);
+      if (userData) {
+        setUser(userData);
+      } else {
+        // If user not found in mock DB but we have a session, sync them
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user) {
+          console.log("User not found in mock DB, syncing...");
+          const syncRes = await apiFetch('/api/auth/sync-user', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+              email: session.user.email, 
+              name: session.user.user_metadata?.name, 
+              role: session.user.user_metadata?.role || 'user',
+              uid: session.user.id
+            })
+          });
+          const syncData = await syncRes.json();
+          if (syncData.success) {
+            setUser(syncData.user);
+          }
+        }
+      }
       if (transData) setTransactions(transData);
     } catch (err) {
       console.error("Failed to fetch user data", err);
@@ -1239,7 +1287,13 @@ const AppContent: React.FC = () => {
         const res = await apiFetch('/api/auth/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: authForm.email, password: authForm.password, role: authConfig.role, name: authForm.name })
+          body: JSON.stringify({ 
+            email: authForm.email, 
+            password: authForm.password, 
+            role: authConfig.role, 
+            name: authForm.name,
+            uid: data.user?.id
+          })
         });
         const userData = await res.json();
         if (userData.success) {
@@ -1295,7 +1349,12 @@ const AppContent: React.FC = () => {
       const res = await apiFetch('/api/auth/sync-user', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: authForm.email, name: authForm.name, role: authConfig.role })
+        body: JSON.stringify({ 
+          email: authForm.email, 
+          name: authForm.name, 
+          role: authConfig.role,
+          uid: data.user?.id
+        })
       });
       const userData = await res.json();
       if (userData.success) {
@@ -1535,7 +1594,7 @@ const AppContent: React.FC = () => {
 
   const handleAdminSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const url = editingProduct ? `/api/products/${editingProduct.id}` : '/api/products';
+    const url = editingProduct ? `/api/admin/products/${editingProduct.id}` : '/api/admin/products';
     const method = editingProduct ? 'PUT' : 'POST';
     
     try {
@@ -1544,13 +1603,16 @@ const AppContent: React.FC = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...formData, payment_mode: paymentMode })
       });
-      if (res.ok) {
+      const data = await res.json();
+      if (res.ok && data.success) {
         showNotify(editingProduct ? "Product updated" : "Product added", 'success');
         setShowAddModal(false);
         setEditingProduct(null);
         setFormData({ name: '', description: '', image_urls: [], quantity: 0, quantity_unit: 1, price: 0, price_type: 'BDT', discount: 0, category: '' });
         setCategoryModified(false);
         fetchProducts();
+      } else {
+        showNotify(data.message || "Admin action failed", 'error');
       }
     } catch (err) {
       showNotify("Admin action failed", 'error');
@@ -2053,7 +2115,7 @@ const AppContent: React.FC = () => {
                   )}
 
                   {dashboardView === 'sell' && user && (
-                    <SellSection user={user} showNotify={showNotify} paymentMode={paymentMode} apiFetch={apiFetch} />
+                    <SellSection user={user} showNotify={showNotify} paymentMode={paymentMode} apiFetch={apiFetch} fetchProducts={fetchProducts} />
                   )}
 
                   {dashboardView === 'tracking' && (
@@ -2992,8 +3054,8 @@ const AppContent: React.FC = () => {
                       required
                       type="number" 
                       className="input-field"
-                      value={formData.quantity}
-                      onChange={(e) => setFormData({...formData, quantity: parseInt(e.target.value)})}
+                      value={formData.quantity || 0}
+                      onChange={(e) => setFormData({...formData, quantity: parseInt(e.target.value) || 0})}
                     />
                   </div>
                   <div>
@@ -3003,8 +3065,8 @@ const AppContent: React.FC = () => {
                       type="number" 
                       min="1"
                       className="input-field"
-                      value={formData.quantity_unit}
-                      onChange={(e) => setFormData({...formData, quantity_unit: parseInt(e.target.value)})}
+                      value={formData.quantity_unit || 1}
+                      onChange={(e) => setFormData({...formData, quantity_unit: parseInt(e.target.value) || 1})}
                     />
                   </div>
                   <div>
@@ -3015,8 +3077,8 @@ const AppContent: React.FC = () => {
                       required
                       type="number" 
                       className="input-field"
-                      value={formData.price}
-                      onChange={(e) => setFormData({...formData, price: parseFloat(e.target.value)})}
+                      value={formData.price || 0}
+                      onChange={(e) => setFormData({...formData, price: parseFloat(e.target.value) || 0})}
                     />
                   </div>
                   <div>
@@ -3026,8 +3088,8 @@ const AppContent: React.FC = () => {
                       min="0"
                       max="100"
                       className="input-field"
-                      value={formData.discount}
-                      onChange={(e) => setFormData({...formData, discount: parseFloat(e.target.value)})}
+                      value={formData.discount || 0}
+                      onChange={(e) => setFormData({...formData, discount: parseFloat(e.target.value) || 0})}
                     />
                   </div>
                 </div>

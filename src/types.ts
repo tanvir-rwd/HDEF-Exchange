@@ -6,7 +6,7 @@ export interface PaymentMethod {
 }
 
 export interface User {
-  id: number;
+  id: number | string;
   name: string; // This is the username, cannot be changed
   email: string;
   password: string;
@@ -25,7 +25,7 @@ export interface User {
 }
 
 export interface Product {
-  id: number;
+  id: number | string;
   name: string;
   description: string;
   image_urls: string[]; // Changed from image_url: string to image_urls: string[]
@@ -36,14 +36,14 @@ export interface Product {
   payment_mode?: 'coin' | 'manual';
   discount?: number;
   category: string;
-  seller_id?: number;
+  seller_id?: number | string;
   status?: 'pending' | 'approved' | 'rejected';
 }
 
 export interface Transaction {
-  id: number;
-  user_id: number;
-  product_id?: number;
+  id: number | string;
+  user_id: number | string;
+  product_id?: number | string;
   amount: number;
   type: 'buy' | 'sell' | 'manual_buy' | 'transfer_in' | 'transfer_out';
   timestamp: string;
@@ -53,7 +53,7 @@ export interface Transaction {
   status: 'pending' | 'pending_manual_payment' | 'pending_verification' | 'processing' | 'shipped' | 'delivered' | 'completed' | 'cancelled';
   tracking_id: string;
   manual_transaction_id?: string;
-  payment_method_id?: number;
+  payment_method_id?: number | string;
   payment_screenshot_url?: string;
   recipient_name?: string;
   sender_name?: string;

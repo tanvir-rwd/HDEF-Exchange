@@ -1,9 +1,36 @@
 import express from "express";
 import cors from "cors";
 import bcrypt from "bcryptjs";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { User, Product, PaymentMethod } from "../src/types";
 
+let supabaseClient: SupabaseClient | null = null;
+
+const getSupabase = (): SupabaseClient => {
+  if (!supabaseClient) {
+    const supabaseUrl = process.env.VITE_SUPABASE_URL;
+    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+    if (!supabaseUrl || !supabaseServiceKey) {
+      console.error("[SUPABASE] Missing VITE_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY environment variables.");
+      throw new Error("Supabase credentials are not configured.");
+    }
+
+    console.log(`[SUPABASE] Initializing with URL: ${supabaseUrl ? 'SET' : 'NOT SET'}`);
+    console.log(`[SUPABASE] Initializing with Service Key: ${supabaseServiceKey ? 'SET' : 'NOT SET'}`);
+    
+    supabaseClient = createClient(supabaseUrl, supabaseServiceKey);
+  }
+  return supabaseClient;
+};
+
 const sanitize = (str: any) => typeof str === 'string' ? str.trim().replace(/[<>]/g, '') : str;
+
+const parseId = (id: any) => {
+  if (typeof id === 'string' && id.includes('-')) return id; // Likely a UUID
+  const parsed = parseInt(id);
+  return isNaN(parsed) ? id : parsed;
+};
 
 const app = express();
 
@@ -15,21 +42,18 @@ app.use((req, res, next) => {
   next();
 });
 
-// Mock Database
-let users: User[] = [
-  { 
-    id: 1, 
-    name: "Admin", 
-    email: "admin", 
-    password: bcrypt.hashSync("admin", 10), 
-    wallet_balance: 1000000, 
-    role: "admin", 
-    full_name: "System Administrator", 
-    contact_info: "admin@hdefexchange.com", 
-    profile_image_url: "https://api.dicebear.com/7.x/avataaars/svg?seed=Admin",
-    is_verified: true
-  }
-];
+// Helper to get settings
+const getSetting = async (key: string, defaultValue: any) => {
+  const { data, error } = await getSupabase().from('settings').select('value').eq('key', key).single();
+  if (error || !data) return defaultValue;
+  return data.value;
+};
+
+// Helper to update settings
+const updateSetting = async (key: string, value: any) => {
+  const { error } = await getSupabase().from('settings').upsert({ key, value });
+  return !error;
+};
 
 const sendEmail = (to: string, subject: string, body: string) => {
   console.log(`\n--- EMAIL NOTIFICATION ---\nTo: ${to}\nSubject: ${subject}\nBody: ${body}\n--------------------------\n`);
@@ -38,12 +62,14 @@ const sendEmail = (to: string, subject: string, body: string) => {
 const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
 
 // Middleware to check if user is admin
-const requireAdmin = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+const requireAdmin = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
   const userId = req.headers['x-user-id'];
   if (!userId) {
     return res.status(401).json({ success: false, message: "Authentication required" });
   }
-  const user = users.find(u => u.id === parseInt(userId as string));
+  const id = parseId(userId);
+  const { data: user, error } = await getSupabase().from('users').select('*').eq('id', id).single();
+  
   if (user && user.role === 'admin') {
     next();
   } else {
@@ -51,69 +77,71 @@ const requireAdmin = (req: express.Request, res: express.Response, next: express
   }
 };
 
-let products: Product[] = [
-  { id: 1, name: "Premium Headphones", description: "High-fidelity wireless noise-cancelling headphones.", image_urls: ["https://picsum.photos/seed/audio/800/600"], quantity: 15, quantity_unit: 1, price: 2500, category: "Electronics", seller_id: 1, status: 'approved', payment_mode: 'coin' },
-  { id: 2, name: "Mechanical Keyboard", description: "Tactile RGB mechanical keyboard for professionals.", image_urls: ["https://picsum.photos/seed/keyboard/800/600"], quantity: 8, quantity_unit: 1, price: 1200, category: "Electronics", seller_id: 1, status: 'approved', payment_mode: 'coin' }
-];
-
-let transactions: any[] = [];
-let paymentMode: 'coin' | 'manual' = 'manual';
-let paymentMethods: PaymentMethod[] = [
-  { id: 1, name: 'bKash', number: '01700000000', instructions: 'Send money to this number.' },
-  { id: 2, name: 'Nagad', number: '01800000000', instructions: 'Send money to this number.' }
-];
-
   // Settings Routes
-  app.get("/api/settings/payment-mode", (req, res) => {
+  app.get("/api/settings/payment-mode", async (req, res) => {
+    const paymentMode = await getSetting('paymentMode', 'manual');
     res.json({ paymentMode });
   });
 
-  app.post("/api/admin/settings/payment-mode", requireAdmin, (req, res) => {
+  app.post("/api/admin/settings/payment-mode", requireAdmin, async (req, res) => {
     const { mode } = req.body;
     if (mode === 'coin' || mode === 'manual') {
-      paymentMode = mode;
-      res.json({ success: true, paymentMode });
+      await updateSetting('paymentMode', mode);
+      res.json({ success: true, paymentMode: mode });
     } else {
       res.status(400).json({ success: false, message: "Invalid payment mode" });
     }
   });
 
-  app.get("/api/payment-methods", (req, res) => {
-    res.json(paymentMethods);
+  app.get("/api/health", async (req, res) => {
+    try {
+      const { data, error } = await getSupabase().from('users').select('count', { count: 'exact', head: true });
+      if (error) throw error;
+      res.json({ success: true, message: "Supabase connected", userCount: data });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: "Supabase connection failed", error: err.message });
+    }
   });
 
-  app.post("/api/admin/payment-methods", requireAdmin, (req, res) => {
-    const newId = paymentMethods.length > 0 ? Math.max(...paymentMethods.map(m => m.id)) + 1 : 1;
-    const newMethod = { id: newId, ...req.body };
-    paymentMethods.push(newMethod);
-    res.json({ success: true, method: newMethod });
+  app.get("/api/payment-methods", async (req, res) => {
+    const { data, error } = await getSupabase().from('payment_methods').select('*');
+    if (error) {
+      console.error("Error fetching payment methods:", error);
+      return res.status(500).json({ success: false, message: error.message });
+    }
+    res.json(data || []);
   });
 
-  app.put("/api/admin/payment-methods/:id", (req, res) => {
-    const id = parseInt(req.params.id);
-    const index = paymentMethods.findIndex(m => m.id === id);
-    if (index === -1) return res.status(404).json({ success: false, message: "Method not found" });
-    paymentMethods[index] = { ...paymentMethods[index], ...req.body };
-    res.json({ success: true, method: paymentMethods[index] });
+  app.post("/api/admin/payment-methods", requireAdmin, async (req, res) => {
+    const { data, error } = await getSupabase().from('payment_methods').insert([req.body]).select().single();
+    if (error) return res.status(500).json({ success: false, message: error.message });
+    res.json({ success: true, method: data });
   });
 
-  app.delete("/api/admin/payment-methods/:id", (req, res) => {
-    const id = parseInt(req.params.id);
-    paymentMethods = paymentMethods.filter(m => m.id !== id);
+  app.put("/api/admin/payment-methods/:id", async (req, res) => {
+    const id = parseId(req.params.id);
+    const { data, error } = await getSupabase().from('payment_methods').update(req.body).eq('id', id).select().single();
+    if (error) return res.status(404).json({ success: false, message: "Method not found" });
+    res.json({ success: true, method: data });
+  });
+
+  app.delete("/api/admin/payment-methods/:id", async (req, res) => {
+    const id = parseId(req.params.id);
+    const { error } = await getSupabase().from('payment_methods').delete().eq('id', id);
+    if (error) return res.status(500).json({ success: false, message: error.message });
     res.json({ success: true });
   });
 
   // Auth Routes
-  app.post("/api/auth/sync-user", (req, res) => {
-    const { name, email, role } = req.body;
+  app.post("/api/auth/sync-user", async (req, res) => {
+    const { name, email, role, uid } = req.body;
     const sanitizedEmail = email.trim().toLowerCase();
     
-    let user = users.find(u => u.email === sanitizedEmail);
+    let { data: user, error } = await getSupabase().from('users').select('*').or(`email.eq.${sanitizedEmail}${uid ? `,id.eq.${uid}` : ''}`).maybeSingle();
     
     if (!user) {
-      const newId = users.length > 0 ? Math.max(...users.map(u => u.id)) + 1 : 1;
-      user = {
-        id: newId,
+      const newUser = {
+        id: uid || undefined, // Let Supabase generate UUID if not provided
         name: name || sanitizedEmail.split('@')[0],
         email: sanitizedEmail,
         password: bcrypt.hashSync(Math.random().toString(36), 10), // Random password
@@ -121,23 +149,27 @@ let paymentMethods: PaymentMethod[] = [
         role: role || 'user',
         is_verified: true
       };
-      users.push(user);
+      const { data, error: insertError } = await getSupabase().from('users').insert([newUser]).select().single();
+      if (insertError) return res.status(500).json({ success: false, message: insertError.message });
+      user = data;
+    } else if (uid && user.id !== uid) {
+      const { data, error: updateError } = await getSupabase().from('users').update({ id: uid }).eq('email', sanitizedEmail).select().single();
+      if (updateError) return res.status(500).json({ success: false, message: updateError.message });
+      user = data;
     }
     
     res.json({ success: true, user });
   });
 
-  app.post("/api/auth/login", (req, res) => {
-    const { name, email, password, role } = req.body;
+  app.post("/api/auth/login", async (req, res) => {
+    const { name, email, password, role, uid } = req.body;
     const sanitizedEmail = email.trim().toLowerCase();
     
-    let user = users.find(u => u.email === sanitizedEmail);
+    let { data: user, error } = await getSupabase().from('users').select('*').or(`email.eq.${sanitizedEmail}${uid ? `,id.eq.${uid}` : ''}`).maybeSingle();
     
-    // If user not in mock DB, sync them (assuming Supabase auth already passed)
     if (!user) {
-      const newId = users.length > 0 ? Math.max(...users.map(u => u.id)) + 1 : 1;
-      user = {
-        id: newId,
+      const newUser = {
+        id: uid || undefined,
         name: name || sanitizedEmail.split('@')[0],
         email: sanitizedEmail,
         password: bcrypt.hashSync(password, 10),
@@ -145,8 +177,13 @@ let paymentMethods: PaymentMethod[] = [
         role: role || 'user',
         is_verified: true
       };
-      users.push(user);
-      return res.json({ success: true, user });
+      const { data, error: insertError } = await getSupabase().from('users').insert([newUser]).select().single();
+      if (insertError) return res.status(500).json({ success: false, message: insertError.message });
+      user = data;
+    } else if (uid && user.id !== uid) {
+      const { data, error: updateError } = await getSupabase().from('users').update({ id: uid }).eq('email', sanitizedEmail).select().single();
+      if (updateError) return res.status(500).json({ success: false, message: updateError.message });
+      user = data;
     }
 
     if (user.role !== role) {
@@ -163,21 +200,20 @@ let paymentMethods: PaymentMethod[] = [
     }
   });
 
-  app.post("/api/auth/register", (req, res) => {
+  app.post("/api/auth/register", async (req, res) => {
     const { name, email, password, role } = req.body;
     const sanitizedName = name.trim().replace(/[<>]/g, '');
     const sanitizedEmail = email.trim().replace(/[<>]/g, '').toLowerCase();
 
-    if (users.find(u => u.email === sanitizedEmail)) {
+    const { data: existingUser } = await getSupabase().from('users').select('id').eq('email', sanitizedEmail).maybeSingle();
+    if (existingUser) {
       return res.status(400).json({ success: false, message: "User already exists" });
     }
 
     const otp = generateOTP();
-    const expiry = Date.now() + 10 * 60 * 1000; // 10 minutes
+    const expiry = new Date(Date.now() + 10 * 60 * 1000).toISOString();
 
-    const newId = users.length > 0 ? Math.max(...users.map(u => u.id)) + 1 : 1;
-    const newUser: User = {
-      id: newId,
+    const newUser = {
       name: sanitizedName,
       email: sanitizedEmail,
       password: bcrypt.hashSync(password, 10),
@@ -188,53 +224,66 @@ let paymentMethods: PaymentMethod[] = [
       verification_expiry: expiry
     };
 
-    users.push(newUser);
+    const { data, error } = await getSupabase().from('users').insert([newUser]).select().single();
+    if (error) return res.status(500).json({ success: false, message: error.message });
+
     sendEmail(email, "Account Verification Code", `Your verification code is: ${otp}. It expires in 10 minutes.`);
     res.json({ success: true, message: "Registration successful. Please check your email for verification code.", email });
   });
 
-  app.post("/api/auth/verify-email", (req, res) => {
+  app.post("/api/auth/verify-email", async (req, res) => {
     const { email, code } = req.body;
-    const userIndex = users.findIndex(u => u.email === email);
+    const { data: user, error } = await getSupabase().from('users').select('*').eq('email', email).single();
     
-    if (userIndex === -1) return res.status(404).json({ success: false, message: "User not found" });
-    const user = users[userIndex];
+    if (error || !user) return res.status(404).json({ success: false, message: "User not found" });
 
-    if (user.verification_code === code && user.verification_expiry && user.verification_expiry > Date.now()) {
-      users[userIndex].is_verified = true;
-      users[userIndex].verification_code = undefined;
-      users[userIndex].verification_expiry = undefined;
-      res.json({ success: true, message: "Email verified successfully. You can now login.", user: users[userIndex] });
+    if (user.verification_code === code && user.verification_expiry && new Date(user.verification_expiry).getTime() > Date.now()) {
+      const { data: updatedUser, error: updateError } = await getSupabase().from('users').update({
+        is_verified: true,
+        verification_code: null,
+        verification_expiry: null
+      }).eq('id', user.id).select().single();
+      
+      if (updateError) return res.status(500).json({ success: false, message: updateError.message });
+      res.json({ success: true, message: "Email verified successfully. You can now login.", user: updatedUser });
     } else {
       res.status(400).json({ success: false, message: "Invalid or expired verification code" });
     }
   });
 
-  app.post("/api/auth/forgot-password", (req, res) => {
+  app.post("/api/auth/forgot-password", async (req, res) => {
     const { email } = req.body;
-    const userIndex = users.findIndex(u => u.email === email);
-    if (userIndex === -1) return res.status(404).json({ success: false, message: "User not found" });
+    const { data: user, error } = await getSupabase().from('users').select('id').eq('email', email).single();
+    if (error || !user) return res.status(404).json({ success: false, message: "User not found" });
 
     const otp = generateOTP();
-    const expiry = Date.now() + 10 * 60 * 1000;
+    const expiry = new Date(Date.now() + 10 * 60 * 1000).toISOString();
 
-    users[userIndex].reset_code = otp;
-    users[userIndex].reset_expiry = expiry;
+    const { error: updateError } = await getSupabase().from('users').update({
+      reset_code: otp,
+      reset_expiry: expiry
+    }).eq('id', user.id);
+
+    if (updateError) return res.status(500).json({ success: false, message: updateError.message });
 
     sendEmail(email, "Password Reset Code", `Your password reset code is: ${otp}. It expires in 10 minutes.`);
     res.json({ success: true, message: "Reset code sent to your email." });
   });
 
-  app.post("/api/auth/reset-password", (req, res) => {
+  app.post("/api/auth/reset-password", async (req, res) => {
     const { email, code, newPassword } = req.body;
-    const userIndex = users.findIndex(u => u.email === email);
-    if (userIndex === -1) return res.status(404).json({ success: false, message: "User not found" });
+    const { data: user, error } = await getSupabase().from('users').select('*').eq('email', email).single();
+    if (error || !user) return res.status(404).json({ success: false, message: "User not found" });
     
-    const user = users[userIndex];
-    if (user.reset_code === code && user.reset_expiry && user.reset_expiry > Date.now()) {
-      users[userIndex].password = bcrypt.hashSync(newPassword, 10);
-      users[userIndex].reset_code = undefined;
-      users[userIndex].reset_expiry = undefined;
+    if (user.reset_code === code && user.reset_expiry && new Date(user.reset_expiry).getTime() > Date.now()) {
+      const { error: updateError } = await getSupabase().from('users').update({
+        password: bcrypt.hashSync(newPassword, 10),
+        reset_code: null,
+        reset_expiry: null
+      }).eq('id', user.id);
+
+      if (updateError) return res.status(500).json({ success: false, message: updateError.message });
+      
       sendEmail(email, "Password Changed", "Your password has been successfully reset. If you didn't do this, please contact support.");
       res.json({ success: true, message: "Password reset successful." });
     } else {
@@ -242,14 +291,19 @@ let paymentMethods: PaymentMethod[] = [
     }
   });
 
-  app.post("/api/auth/change-password", (req, res) => {
+  app.post("/api/auth/change-password", async (req, res) => {
     const { userId, oldPassword, newPassword } = req.body;
-    const userIndex = users.findIndex(u => u.id === userId);
-    if (userIndex === -1) return res.status(404).json({ success: false, message: "User not found" });
+    const id = parseId(userId);
+    const { data: user, error } = await getSupabase().from('users').select('*').eq('id', id).single();
+    if (error || !user) return res.status(404).json({ success: false, message: "User not found" });
 
-    const user = users[userIndex];
     if (bcrypt.compareSync(oldPassword, user.password)) {
-      users[userIndex].password = bcrypt.hashSync(newPassword, 10);
+      const { error: updateError } = await getSupabase().from('users').update({
+        password: bcrypt.hashSync(newPassword, 10)
+      }).eq('id', id);
+
+      if (updateError) return res.status(500).json({ success: false, message: updateError.message });
+      
       sendEmail(user.email, "Security Notification", "Your password was recently changed from your account settings.");
       res.json({ success: true, message: "Password updated successfully." });
     } else {
@@ -262,208 +316,230 @@ let paymentMethods: PaymentMethod[] = [
     res.json({ status: "ok", time: new Date().toISOString() });
   });
 
-  app.get("/api/products", (req, res) => {
-    res.json(products);
+  app.get("/api/products", async (req, res) => {
+    const { data, error } = await getSupabase().from('products').select('*');
+    if (error) {
+      console.error("Error fetching products:", error);
+      return res.status(500).json({ success: false, message: error.message });
+    }
+    res.json(data || []);
   });
 
-  app.post("/api/products", (req, res) => {
+  app.post("/api/products", async (req, res) => {
     const unit = req.body.quantity_unit || 1;
     if (req.body.quantity % unit !== 0) {
       return res.status(400).json({ success: false, message: `Quantity must be a multiple of ${unit}` });
     }
-    const newId = products.length > 0 ? Math.max(...products.map(p => p.id)) + 1 : 1;
-    const newProduct = { id: newId, ...req.body, quantity_unit: unit };
-    products.push(newProduct);
-    res.json({ success: true, product: newProduct });
+    const { data, error } = await getSupabase().from('products').insert([{ ...req.body, quantity_unit: unit }]).select().single();
+    if (error) return res.status(500).json({ success: false, message: error.message });
+    res.json({ success: true, product: data });
   });
 
-  app.put("/api/products/:id", (req, res) => {
-    const id = parseInt(req.params.id);
-    const index = products.findIndex(p => p.id === id);
-    if (index === -1) return res.status(404).json({ success: false, message: "Product not found" });
+  app.put("/api/products/:id", async (req, res) => {
+    const id = parseId(req.params.id);
+    const { data: product, error: fetchError } = await getSupabase().from('products').select('*').eq('id', id).single();
+    if (fetchError || !product) return res.status(404).json({ success: false, message: "Product not found" });
     
-    const unit = req.body.quantity_unit || products[index].quantity_unit || 1;
-    const quantity = req.body.quantity !== undefined ? req.body.quantity : products[index].quantity;
+    const unit = req.body.quantity_unit || product.quantity_unit || 1;
+    const quantity = req.body.quantity !== undefined ? req.body.quantity : product.quantity;
     if (quantity % unit !== 0) {
       return res.status(400).json({ success: false, message: `Quantity must be a multiple of ${unit}` });
     }
 
-    products[index] = { ...products[index], ...req.body, quantity_unit: unit };
-    res.json({ success: true, product: products[index] });
+    const { data: updatedProduct, error: updateError } = await getSupabase().from('products').update({ ...req.body, quantity_unit: unit }).eq('id', id).select().single();
+    if (updateError) return res.status(500).json({ success: false, message: updateError.message });
+    res.json({ success: true, product: updatedProduct });
   });
 
-  app.delete("/api/products/:id", (req, res) => {
-    const id = parseInt(req.params.id);
-    products = products.filter(p => p.id !== id);
+  app.delete("/api/products/:id", async (req, res) => {
+    const id = parseId(req.params.id);
+    const { error } = await getSupabase().from('products').delete().eq('id', id);
+    if (error) return res.status(500).json({ success: false, message: error.message });
     res.json({ success: true });
   });
 
-  app.get("/api/users/:id", (req, res) => {
-    console.log(`API call: /api/users/${req.params.id}`);
-    const user = users.find(u => u.id === parseInt(req.params.id));
-    res.json(user || null);
+  app.get("/api/users/:id", async (req, res) => {
+    const idParam = parseId(req.params.id);
+    console.log(`API call: /api/users/${idParam}`);
+    const { data, error } = await getSupabase().from('users').select('*').eq('id', idParam).maybeSingle();
+    res.json(data || null);
   });
 
-  app.post("/api/users/update", (req, res) => {
+  app.post("/api/users/update", async (req, res) => {
     const { userId, full_name, whatsapp_number, contact_info, profile_details, profile_image_url } = req.body;
-    const userIndex = users.findIndex(u => u.id === userId);
-    if (userIndex === -1) return res.status(404).json({ success: false, message: "User not found" });
-
-    users[userIndex] = {
-      ...users[userIndex],
+    const id = parseId(userId);
+    const { data, error } = await getSupabase().from('users').update({
       full_name,
       whatsapp_number,
       contact_info,
       profile_details,
       profile_image_url
-    };
-    res.json({ success: true, user: users[userIndex] });
-  });
-
-  app.get("/api/transactions/:userId", (req, res) => {
-    console.log(`API call: /api/transactions/${req.params.userId}`);
-    const userId = parseInt(req.params.userId);
-    const productMap = new Map(products.map(p => [p.id, p.name]));
+    }).eq('id', id).select().single();
     
-    const userTransactions = transactions
-      .filter(t => t.user_id === userId)
-      .map(t => ({
-        ...t,
-        product_name: productMap.get(t.product_id) || "Unknown Product"
-      }))
-      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-    res.json(userTransactions);
+    if (error) return res.status(404).json({ success: false, message: "User not found" });
+    res.json({ success: true, user: data });
   });
 
-  app.get("/api/admin/users", requireAdmin, (req, res) => {
+  app.get("/api/transactions/:userId", async (req, res) => {
+    const userIdParam = parseId(req.params.userId);
+    console.log(`API call: /api/transactions/${userIdParam}`);
+    
+    const { data: transactions, error: transError } = await getSupabase()
+      .from('transactions')
+      .select('*, products(name)')
+      .eq('user_id', userIdParam)
+      .order('timestamp', { ascending: false });
+    
+    if (transError) return res.status(500).json({ success: false, message: transError.message });
+
+    const formattedTransactions = transactions.map(t => ({
+      ...t,
+      product_name: t.products?.name || "Unknown Product"
+    }));
+    
+    res.json(formattedTransactions);
+  });
+
+  app.get("/api/admin/users", requireAdmin, async (req, res) => {
     console.log(`API call: /api/admin/users`);
-    res.json(users.map(u => {
+    const { data, error } = await getSupabase().from('users').select('*');
+    if (error) return res.status(500).json({ success: false, message: error.message });
+    
+    res.json(data.map(u => {
       const { password, ...userWithoutPassword } = u;
       return userWithoutPassword;
     }));
   });
 
-  app.put("/api/admin/users/:id", (req, res) => {
-    const id = parseInt(req.params.id);
-    const index = users.findIndex(u => u.id === id);
-    if (index !== -1) {
-      users[index] = { ...users[index], ...req.body };
-      res.json({ success: true, user: users[index] });
-    } else {
-      res.status(404).json({ success: false, message: "User not found" });
-    }
+  app.put("/api/admin/users/:id", async (req, res) => {
+    const id = parseId(req.params.id);
+    const { data, error } = await getSupabase().from('users').update(req.body).eq('id', id).select().single();
+    if (error) return res.status(404).json({ success: false, message: "User not found" });
+    res.json({ success: true, user: data });
   });
 
-  app.delete("/api/admin/users/:id", (req, res) => {
-    const id = parseInt(req.params.id);
-    users = users.filter(u => u.id !== id);
+  app.delete("/api/admin/users/:id", async (req, res) => {
+    const id = parseId(req.params.id);
+    const { error } = await getSupabase().from('users').delete().eq('id', id);
+    if (error) return res.status(500).json({ success: false, message: error.message });
     res.json({ success: true });
   });
 
-  app.get("/api/admin/transactions", requireAdmin, (req, res) => {
+  app.get("/api/admin/transactions", requireAdmin, async (req, res) => {
     console.log(`API call: /api/admin/transactions`);
     
-    // Create lookup maps for performance
-    const userMap = new Map(users.map(u => [u.id, u.name]));
-    const productMap = new Map(products.map(p => [p.id, p.name]));
+    const { data: transactions, error } = await getSupabase()
+      .from('transactions')
+      .select('*, users(name), products(name)')
+      .order('timestamp', { ascending: false });
+    
+    if (error) return res.status(500).json({ success: false, message: error.message });
 
-    const allTransactions = transactions
-      .map(t => ({
-        ...t,
-        user_name: userMap.get(t.user_id) || "Unknown User",
-        product_name: productMap.get(t.product_id) || "Unknown Product"
-      }))
-      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-    res.json(allTransactions);
+    const formattedTransactions = transactions.map(t => ({
+      ...t,
+      user_name: t.users?.name || "Unknown User",
+      product_name: t.products?.name || "Unknown Product"
+    }));
+    
+    res.json(formattedTransactions);
   });
 
-  app.post("/api/admin/transactions/:id/status", requireAdmin, (req, res) => {
+  app.post("/api/admin/transactions/:id/status", requireAdmin, async (req, res) => {
     const { status } = req.body;
-    const transactionIndex = transactions.findIndex(t => t.id === parseInt(req.params.id));
-    if (transactionIndex === -1) return res.status(404).json({ success: false, message: "Transaction not found" });
-
-    const transaction = transactions[transactionIndex];
+    const id = parseId(req.params.id);
     
+    const { data: transaction, error: fetchError } = await getSupabase().from('transactions').select('*').eq('id', id).single();
+    if (fetchError || !transaction) return res.status(404).json({ success: false, message: "Transaction not found" });
+
     // If cancelling a buy transaction, restore stock and refund coins
     if (status === 'cancelled' && transaction.status !== 'cancelled' && (transaction.type === 'buy' || transaction.type === 'manual_buy')) {
-      const productIndex = products.findIndex(p => p.id === transaction.product_id);
-      if (productIndex !== -1) {
-        products[productIndex].quantity += transaction.quantity;
+      // Restore stock
+      const { data: product } = await getSupabase().from('products').select('quantity').eq('id', transaction.product_id).single();
+      if (product) {
+        await getSupabase().from('products').update({ quantity: product.quantity + transaction.quantity }).eq('id', transaction.product_id);
       }
+      
       if (transaction.type === 'buy') {
-        const userIndex = users.findIndex(u => u.id === transaction.user_id);
-        if (userIndex !== -1) users[userIndex].wallet_balance += transaction.amount;
-        const adminIndex = users.findIndex(u => u.id === 1);
-        if (adminIndex !== -1) users[adminIndex].wallet_balance -= transaction.amount;
+        // Refund user
+        const { data: user } = await getSupabase().from('users').select('wallet_balance').eq('id', transaction.user_id).single();
+        if (user) {
+          await getSupabase().from('users').update({ wallet_balance: user.wallet_balance + transaction.amount }).eq('id', transaction.user_id);
+        }
+        // Deduct from admin
+        const { data: admin } = await getSupabase().from('users').select('id, wallet_balance').eq('role', 'admin').limit(1).single();
+        if (admin) {
+          await getSupabase().from('users').update({ wallet_balance: admin.wallet_balance - transaction.amount }).eq('id', admin.id);
+        }
       }
     } 
     // If un-cancelling a buy transaction, deduct stock and coins again
     else if (status !== 'cancelled' && transaction.status === 'cancelled' && (transaction.type === 'buy' || transaction.type === 'manual_buy')) {
-      const productIndex = products.findIndex(p => p.id === transaction.product_id);
-      if (productIndex !== -1) {
-        // Check if enough stock is available
-        if (products[productIndex].quantity < transaction.quantity) {
+      const { data: product } = await getSupabase().from('products').select('quantity').eq('id', transaction.product_id).single();
+      if (product) {
+        if (product.quantity < transaction.quantity) {
           return res.status(400).json({ success: false, message: "Not enough stock to un-cancel this order" });
         }
-        products[productIndex].quantity -= transaction.quantity;
+        await getSupabase().from('products').update({ quantity: product.quantity - transaction.quantity }).eq('id', transaction.product_id);
       }
+      
       if (transaction.type === 'buy') {
-        const userIndex = users.findIndex(u => u.id === transaction.user_id);
-        if (userIndex !== -1) {
-          // Check if user has enough balance
-          if (users[userIndex].wallet_balance < transaction.amount) {
-            // Revert stock deduction if balance is insufficient
-            if (productIndex !== -1) products[productIndex].quantity += transaction.quantity;
+        const { data: user } = await getSupabase().from('users').select('wallet_balance').eq('id', transaction.user_id).single();
+        if (user) {
+          if (user.wallet_balance < transaction.amount) {
+            // Revert stock deduction
+            if (product) await getSupabase().from('products').update({ quantity: product.quantity }).eq('id', transaction.product_id);
             return res.status(400).json({ success: false, message: "User does not have enough coins to un-cancel this order" });
           }
-          users[userIndex].wallet_balance -= transaction.amount;
+          await getSupabase().from('users').update({ wallet_balance: user.wallet_balance - transaction.amount }).eq('id', transaction.user_id);
         }
-        const adminIndex = users.findIndex(u => u.id === 1);
-        if (adminIndex !== -1) users[adminIndex].wallet_balance += transaction.amount;
+        const { data: admin } = await getSupabase().from('users').select('id, wallet_balance').eq('role', 'admin').limit(1).single();
+        if (admin) {
+          await getSupabase().from('users').update({ wallet_balance: admin.wallet_balance + transaction.amount }).eq('id', admin.id);
+        }
       }
     }
 
-    transactions[transactionIndex].status = status;
+    const { error: updateError } = await getSupabase().from('transactions').update({ status }).eq('id', id);
+    if (updateError) return res.status(500).json({ success: false, message: updateError.message });
+    
     res.json({ success: true, message: "Transaction status updated" });
   });
 
-  app.post("/api/admin/transactions/:id/verify", requireAdmin, (req, res) => {
-    const id = parseInt(req.params.id);
-    const index = transactions.findIndex(t => t.id === id);
-    if (index === -1) return res.status(404).json({ success: false, message: "Transaction not found" });
-    
-    transactions[index].status = 'processing';
-    res.json({ success: true, transaction: transactions[index] });
+  app.post("/api/admin/transactions/:id/verify", requireAdmin, async (req, res) => {
+    const id = parseId(req.params.id);
+    const { data, error } = await getSupabase().from('transactions').update({ status: 'processing' }).eq('id', id).select().single();
+    if (error) return res.status(404).json({ success: false, message: "Transaction not found" });
+    res.json({ success: true, transaction: data });
   });
 
-  app.post("/api/admin/transactions/:id/reject", requireAdmin, (req, res) => {
-    const id = parseInt(req.params.id);
-    const index = transactions.findIndex(t => t.id === id);
-    if (index === -1) return res.status(404).json({ success: false, message: "Transaction not found" });
+  app.post("/api/admin/transactions/:id/reject", requireAdmin, async (req, res) => {
+    const id = parseId(req.params.id);
+    const { data: transaction, error: fetchError } = await getSupabase().from('transactions').select('*').eq('id', id).single();
+    if (fetchError || !transaction) return res.status(404).json({ success: false, message: "Transaction not found" });
     
-    const transaction = transactions[index];
     if (transaction.status !== 'cancelled' && (transaction.type === 'buy' || transaction.type === 'manual_buy')) {
-      const productIndex = products.findIndex(p => p.id === transaction.product_id);
-      if (productIndex !== -1) {
-        products[productIndex].quantity += transaction.quantity;
+      const { data: product } = await getSupabase().from('products').select('quantity').eq('id', transaction.product_id).single();
+      if (product) {
+        await getSupabase().from('products').update({ quantity: product.quantity + transaction.quantity }).eq('id', transaction.product_id);
       }
     }
 
-    transactions[index].status = 'cancelled';
-    res.json({ success: true, transaction: transactions[index] });
+    const { data: updatedTransaction, error: updateError } = await getSupabase().from('transactions').update({ status: 'cancelled' }).eq('id', id).select().single();
+    if (updateError) return res.status(500).json({ success: false, message: updateError.message });
+    
+    res.json({ success: true, transaction: updatedTransaction });
   });
 
-  app.post("/api/exchange", (req, res) => {
+  app.post("/api/exchange", async (req, res) => {
     const { userId, productId } = req.body;
-    const userIndex = users.findIndex(u => u.id === userId);
-    const productIndex = products.findIndex(p => p.id === productId);
+    const id = parseId(userId);
+    
+    const { data: user, error: userError } = await getSupabase().from('users').select('*').eq('id', id).single();
+    const { data: product, error: prodError } = await getSupabase().from('products').select('*').eq('id', parseId(productId)).single();
 
-    if (userIndex === -1 || productIndex === -1) {
+    if (userError || prodError || !user || !product) {
       return res.status(404).json({ success: false, message: "User or Product not found" });
     }
-
-    const user = users[userIndex];
-    const product = products[productIndex];
 
     if (product.quantity < (product.quantity_unit || 1)) {
       return res.status(400).json({ success: false, message: "Product out of stock" });
@@ -473,22 +549,24 @@ let paymentMethods: PaymentMethod[] = [
     const discount = product.discount || 0;
     const discountedPrice = price - (price * (discount / 100));
 
+    const paymentMode = await getSetting('paymentMode', 'manual');
+
     if (paymentMode === 'coin') {
       if (user.wallet_balance < discountedPrice) {
         return res.status(400).json({ success: false, message: "Insufficient coins" });
       }
 
       // Process Transaction
-      users[userIndex].wallet_balance -= discountedPrice;
-      const adminIndex = users.findIndex(u => u.id === 1);
-      if (adminIndex !== -1) users[adminIndex].wallet_balance += discountedPrice;
+      await getSupabase().from('users').update({ wallet_balance: user.wallet_balance - discountedPrice }).eq('id', id);
+      const { data: admin } = await getSupabase().from('users').select('id, wallet_balance').eq('role', 'admin').limit(1).single();
+      if (admin) {
+        await getSupabase().from('users').update({ wallet_balance: admin.wallet_balance + discountedPrice }).eq('id', admin.id);
+      }
     }
     
-    products[productIndex].quantity -= (product.quantity_unit || 1);
+    await getSupabase().from('products').update({ quantity: product.quantity - (product.quantity_unit || 1) }).eq('id', product.id);
 
-    const newId = transactions.length > 0 ? Math.max(...transactions.map(t => t.id)) + 1 : 1;
     const transaction = {
-      id: newId,
       user_id: userId,
       product_id: productId,
       amount: discountedPrice,
@@ -498,19 +576,26 @@ let paymentMethods: PaymentMethod[] = [
       status: paymentMode === 'coin' ? 'pending' : 'pending_manual_payment',
       tracking_id: 'TRK-' + Math.random().toString(36).substr(2, 9).toUpperCase()
     };
-    transactions.push(transaction);
+    
+    const { error: transError } = await getSupabase().from('transactions').insert([transaction]);
+    if (transError) return res.status(500).json({ success: false, message: transError.message });
 
     res.json({ success: true, message: paymentMode === 'coin' ? "Purchase successful!" : "Order placed. Please complete manual payment." });
   });
 
-  app.post("/api/checkout", (req, res) => {
-    const { userId, items, manualTransactionId, paymentScreenshotUrl } = req.body; // items: { productId: number, quantity: number }[]
-    const userIndex = users.findIndex(u => u.id === userId);
-    if (userIndex === -1) return res.status(404).json({ success: false, message: "User not found" });
+  app.post("/api/checkout", async (req, res) => {
+    const { userId, items, manualTransactionId, paymentScreenshotUrl } = req.body;
+    const id = parseId(userId);
+    const { data: user, error: userError } = await getSupabase().from('users').select('*').eq('id', id).single();
+    if (userError || !user) return res.status(404).json({ success: false, message: "User not found" });
 
-    const user = users[userIndex];
-    const productMap = new Map(products.map(p => [p.id, p]));
+    const { data: productsList, error: prodError } = await getSupabase().from('products').select('*').in('id', items.map((i: any) => i.productId));
+    if (prodError) return res.status(500).json({ success: false, message: prodError.message });
+    
+    const productMap = new Map(productsList.map(p => [p.id, p]));
     let totalCost = 0;
+
+    const paymentMode = await getSetting('paymentMode', 'manual');
 
     // Validate stock and calculate total cost
     for (const item of items) {
@@ -537,24 +622,25 @@ let paymentMethods: PaymentMethod[] = [
       }
 
       // Process transaction
-      users[userIndex].wallet_balance -= totalCost;
-      const adminIndex = users.findIndex(u => u.id === 1);
-      if (adminIndex !== -1) users[adminIndex].wallet_balance += totalCost;
+      await getSupabase().from('users').update({ wallet_balance: user.wallet_balance - totalCost }).eq('id', id);
+      const { data: admin } = await getSupabase().from('users').select('id, wallet_balance').eq('role', 'admin').limit(1).single();
+      if (admin) {
+        await getSupabase().from('users').update({ wallet_balance: admin.wallet_balance + totalCost }).eq('id', admin.id);
+      }
     }
 
+    const newTransactions = [];
     for (const item of items) {
       const product = productMap.get(item.productId);
-      if (!product) continue; // Should not happen as we validated above
+      if (!product) continue;
       
-      product.quantity -= item.quantity;
+      await getSupabase().from('products').update({ quantity: product.quantity - item.quantity }).eq('id', product.id);
 
       const price = product.price;
       const discount = product.discount || 0;
       const discountedPrice = price - (price * (discount / 100));
 
-      const newId = transactions.length > 0 ? Math.max(...transactions.map(t => t.id)) + 1 : 1;
-      transactions.push({
-        id: newId,
+      newTransactions.push({
         user_id: userId,
         product_id: item.productId,
         amount: (item.quantity / (product.quantity_unit || 1)) * discountedPrice,
@@ -568,19 +654,21 @@ let paymentMethods: PaymentMethod[] = [
       });
     }
 
+    const { error: transError } = await getSupabase().from('transactions').insert(newTransactions);
+    if (transError) return res.status(500).json({ success: false, message: transError.message });
+
     res.json({ success: true, message: paymentMode === 'coin' ? "Purchase successful!" : "Order placed. Please wait for admin approval." });
   });
 
   // Sell Request Routes
-  app.post("/api/sell-request", (req, res) => {
+  app.post("/api/sell-request", async (req, res) => {
     const { name, description, image_urls, quantity, quantity_unit, price, price_type, category, seller_id, payment_mode } = req.body;
     const unit = quantity_unit || 1;
     if (quantity % unit !== 0) {
       return res.status(400).json({ success: false, message: `Quantity must be a multiple of ${unit}` });
     }
-    const newId = products.length > 0 ? Math.max(...products.map(p => p.id)) + 1 : 1;
-    const newProduct: Product = {
-      id: newId,
+    
+    const newProduct = {
       name,
       description,
       image_urls: image_urls || [],
@@ -593,39 +681,34 @@ let paymentMethods: PaymentMethod[] = [
       seller_id,
       status: 'pending'
     };
-    products.push(newProduct);
-    res.json({ success: true, product: newProduct });
+    
+    const { data, error } = await getSupabase().from('products').insert([newProduct]).select().single();
+    if (error) return res.status(500).json({ success: false, message: error.message });
+    res.json({ success: true, product: data });
   });
 
-  app.post("/api/admin/sell-request/approve", requireAdmin, (req, res) => {
+  app.post("/api/admin/sell-request/approve", requireAdmin, async (req, res) => {
     const { productId } = req.body;
-    const productIndex = products.findIndex(p => p.id === productId);
-    if (productIndex === -1) return res.status(404).json({ success: false, message: "Product not found" });
+    const { data: product, error: prodError } = await getSupabase().from('products').select('*').eq('id', productId).single();
+    if (prodError || !product) return res.status(404).json({ success: false, message: "Product not found" });
 
-    const product = products[productIndex];
     if (product.status !== 'pending') return res.status(400).json({ success: false, message: "Request already processed" });
 
-    const sellerIndex = users.findIndex(u => u.id === product.seller_id);
-    if (sellerIndex === -1) return res.status(404).json({ success: false, message: "Seller not found" });
+    const { data: seller, error: sellerError } = await getSupabase().from('users').select('*').eq('id', product.seller_id).single();
+    if (sellerError || !seller) return res.status(404).json({ success: false, message: "Seller not found" });
 
-    // Automated Workflow:
-    // 1. Add coins to seller's account if payment mode is 'coin'
     const totalValue = (product.quantity / (product.quantity_unit || 1)) * product.price;
     if (product.payment_mode === 'coin') {
-      users[sellerIndex].wallet_balance += totalValue;
-      const adminIndex = users.findIndex(u => u.id === 1);
-      if (adminIndex !== -1) {
-        users[adminIndex].wallet_balance -= totalValue;
+      await getSupabase().from('users').update({ wallet_balance: seller.wallet_balance + totalValue }).eq('id', seller.id);
+      const { data: admin } = await getSupabase().from('users').select('id, wallet_balance').eq('role', 'admin').limit(1).single();
+      if (admin) {
+        await getSupabase().from('users').update({ wallet_balance: admin.wallet_balance - totalValue }).eq('id', admin.id);
       }
     }
 
-    // 2. Update product status to approved (Marketplace addition)
-    products[productIndex].status = 'approved';
+    await getSupabase().from('products').update({ status: 'approved' }).eq('id', productId);
 
-    // 3. Record transaction for seller
-    const newId = transactions.length > 0 ? Math.max(...transactions.map(t => t.id)) + 1 : 1;
-    transactions.push({
-      id: newId,
+    const transaction = {
       user_id: product.seller_id,
       product_id: productId,
       amount: totalValue,
@@ -634,7 +717,9 @@ let paymentMethods: PaymentMethod[] = [
       timestamp: new Date().toISOString(),
       status: 'delivered',
       tracking_id: 'SELL-' + Math.random().toString(36).substr(2, 9).toUpperCase()
-    });
+    };
+    
+    await getSupabase().from('transactions').insert([transaction]);
 
     res.json({ 
       success: true, 
@@ -644,25 +729,23 @@ let paymentMethods: PaymentMethod[] = [
     });
   });
 
-  app.post("/api/admin/sell-request/reject", requireAdmin, (req, res) => {
+  app.post("/api/admin/sell-request/reject", requireAdmin, async (req, res) => {
     const { productId } = req.body;
-    const productIndex = products.findIndex(p => p.id === productId);
-    if (productIndex === -1) return res.status(404).json({ success: false, message: "Product not found" });
-
-    products[productIndex].status = 'rejected';
+    const { error } = await getSupabase().from('products').update({ status: 'rejected' }).eq('id', productId);
+    if (error) return res.status(404).json({ success: false, message: "Product not found" });
     res.json({ success: true, message: "Sell request rejected" });
   });
 
   // Admin Routes
-  app.post("/api/admin/products", requireAdmin, (req, res) => {
+  app.post("/api/admin/products", requireAdmin, async (req, res) => {
     const { name, description, image_urls, quantity, quantity_unit, price, price_type, payment_mode, category } = req.body;
+    const userId = req.headers['x-user-id'];
     const unit = quantity_unit || 1;
     if (quantity % unit !== 0) {
       return res.status(400).json({ success: false, message: `Quantity must be a multiple of ${unit}` });
     }
-    const newId = products.length > 0 ? Math.max(...products.map(p => p.id)) + 1 : 1;
+    
     const newProduct = {
-      id: newId,
       name,
       description,
       image_urls,
@@ -672,76 +755,76 @@ let paymentMethods: PaymentMethod[] = [
       price_type,
       payment_mode: payment_mode || 'coin',
       category: category || "Uncategorized",
-      seller_id: 1
+      seller_id: userId ? parseId(userId) : null,
+      status: 'approved'
     };
-    products.push(newProduct);
-    res.json({ success: true, product: newProduct });
+    
+    const { data, error } = await getSupabase().from('products').insert([newProduct]).select().single();
+    if (error) return res.status(500).json({ success: false, message: error.message });
+    res.json({ success: true, product: data });
   });
 
-  app.put("/api/admin/products/:id", (req, res) => {
-    const id = parseInt(req.params.id);
-    const index = products.findIndex(p => p.id === id);
-    if (index !== -1) {
-      const unit = req.body.quantity_unit || products[index].quantity_unit || 1;
-      const quantity = req.body.quantity !== undefined ? req.body.quantity : products[index].quantity;
-      if (quantity % unit !== 0) {
-        return res.status(400).json({ success: false, message: `Quantity must be a multiple of ${unit}` });
-      }
-      products[index] = { ...products[index], ...req.body, quantity_unit: unit };
-      res.json({ success: true });
-    } else {
-      res.status(404).json({ success: false });
+  app.put("/api/admin/products/:id", requireAdmin, async (req, res) => {
+    const id = parseId(req.params.id);
+    const { data: product, error: fetchError } = await getSupabase().from('products').select('*').eq('id', id).single();
+    if (fetchError || !product) return res.status(404).json({ success: false, message: "Product not found" });
+
+    const unit = req.body.quantity_unit || product.quantity_unit || 1;
+    const quantity = req.body.quantity !== undefined ? req.body.quantity : product.quantity;
+    if (quantity % unit !== 0) {
+      return res.status(400).json({ success: false, message: `Quantity must be a multiple of ${unit}` });
     }
+    
+    const { data: updatedProduct, error: updateError } = await getSupabase().from('products').update({ ...req.body, quantity_unit: unit }).eq('id', id).select().single();
+    if (updateError) return res.status(500).json({ success: false, message: updateError.message });
+    res.json({ success: true, product: updatedProduct });
   });
 
-  app.delete("/api/admin/products/:id", requireAdmin, (req, res) => {
-    const id = parseInt(req.params.id);
-    const initialLength = products.length;
-    products = products.filter(p => p.id !== id);
-    if (products.length < initialLength) {
-      res.json({ success: true, message: "Product deleted successfully" });
-    } else {
-      res.status(404).json({ success: false, message: "Product not found" });
-    }
+  app.delete("/api/admin/products/:id", requireAdmin, async (req, res) => {
+    const id = parseId(req.params.id);
+    const { error } = await getSupabase().from('products').delete().eq('id', id);
+    if (error) return res.status(404).json({ success: false, message: "Product not found" });
+    res.json({ success: true, message: "Product deleted successfully" });
   });
 
-  app.post("/api/coins/transfer", (req, res) => {
+  app.post("/api/coins/transfer", async (req, res) => {
     const { fromUserId, toUsername, amount } = req.body;
-    const fromIndex = users.findIndex(u => u.id === fromUserId);
-    const toIndex = users.findIndex(u => u.email === toUsername);
+    const fromId = parseId(fromUserId);
+    
+    const { data: fromUser, error: fromError } = await getSupabase().from('users').select('*').eq('id', fromId).single();
+    const { data: toUser, error: toError } = await getSupabase().from('users').select('*').eq('email', toUsername.toLowerCase()).single();
 
-    if (fromIndex === -1) return res.status(404).json({ success: false, message: "Sender not found" });
-    if (toIndex === -1) return res.status(404).json({ success: false, message: "Recipient not found" });
-    if (fromIndex === toIndex) return res.status(400).json({ success: false, message: "Cannot transfer to yourself" });
+    if (fromError || !fromUser) return res.status(404).json({ success: false, message: "Sender not found" });
+    if (toError || !toUser) return res.status(404).json({ success: false, message: "Recipient not found" });
+    if (fromUser.id === toUser.id) return res.status(400).json({ success: false, message: "Cannot transfer to yourself" });
     if (amount <= 0) return res.status(400).json({ success: false, message: "Invalid amount" });
-    if (users[fromIndex].wallet_balance < amount) return res.status(400).json({ success: false, message: "Insufficient balance" });
+    if (fromUser.wallet_balance < amount) return res.status(400).json({ success: false, message: "Insufficient balance" });
 
-    users[fromIndex].wallet_balance -= amount;
-    users[toIndex].wallet_balance += amount;
+    await getSupabase().from('users').update({ wallet_balance: fromUser.wallet_balance - amount }).eq('id', fromUser.id);
+    await getSupabase().from('users').update({ wallet_balance: toUser.wallet_balance + amount }).eq('id', toUser.id);
 
-    const newId1 = transactions.length > 0 ? Math.max(...transactions.map(t => t.id)) + 1 : 1;
-    transactions.push({
-      id: newId1,
-      user_id: fromUserId,
-      amount: amount,
-      type: 'transfer_out',
-      timestamp: new Date().toISOString(),
-      status: 'completed',
-      tracking_id: 'XFER-' + Math.random().toString(36).substr(2, 9).toUpperCase(),
-      recipient_name: toUsername
-    });
+    const transactions = [
+      {
+        user_id: fromUserId,
+        amount: amount,
+        type: 'transfer_out',
+        timestamp: new Date().toISOString(),
+        status: 'completed',
+        tracking_id: 'XFER-' + Math.random().toString(36).substr(2, 9).toUpperCase(),
+        recipient_name: toUsername
+      },
+      {
+        user_id: toUser.id,
+        amount: amount,
+        type: 'transfer_in',
+        timestamp: new Date().toISOString(),
+        status: 'completed',
+        tracking_id: 'XFER-' + Math.random().toString(36).substr(2, 9).toUpperCase(),
+        sender_name: fromUser.name
+      }
+    ];
 
-    const newId2 = transactions.length > 0 ? Math.max(...transactions.map(t => t.id)) + 1 : 1;
-    transactions.push({
-      id: newId2,
-      user_id: users[toIndex].id,
-      amount: amount,
-      type: 'transfer_in',
-      timestamp: new Date().toISOString(),
-      status: 'completed',
-      tracking_id: 'XFER-' + Math.random().toString(36).substr(2, 9).toUpperCase(),
-      sender_name: users[fromIndex].name
-    });
+    await getSupabase().from('transactions').insert(transactions);
 
     res.json({ success: true, message: `Successfully transferred ${amount} coins to ${toUsername}` });
   });
