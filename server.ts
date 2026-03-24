@@ -1,84 +1,65 @@
 import express from "express";
-import { createServer as createViteServer } from "vite";
-import path from "path";
-import { fileURLToPath } from "url";
 import cors from "cors";
 import bcrypt from "bcryptjs";
 import { User, Product, PaymentMethod } from "./src/types";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const app = express();
 
-const sanitize = (str: any) => typeof str === 'string' ? str.trim().replace(/[<>]/g, '') : str;
+app.use(cors());
+app.use(express.json({ limit: '10mb' }));
 
-const apiFetch = async (url: string, options: RequestInit = {}, user?: User | null) => {
-  const headers: Record<string, string> = {
-    ...(options.headers as Record<string, string>),
-  };
-  if (user) {
-    headers['x-user-id'] = user.id.toString();
+app.use((req, res, next) => {
+  console.log(`Request: ${req.method} ${req.url}`);
+  next();
+});
+
+// Mock Database
+let users: User[] = [
+  { 
+    id: 1, 
+    name: "Admin", 
+    email: "admin", 
+    password: bcrypt.hashSync("admin", 10), 
+    wallet_balance: 1000000, 
+    role: "admin", 
+    full_name: "System Administrator", 
+    contact_info: "admin@hdefexchange.com", 
+    profile_image_url: "https://api.dicebear.com/7.x/avataaars/svg?seed=Admin",
+    is_verified: true
   }
-  return fetch(url, { ...options, headers });
+];
+
+const sendEmail = (to: string, subject: string, body: string) => {
+  console.log(`\n--- EMAIL NOTIFICATION ---\nTo: ${to}\nSubject: ${subject}\nBody: ${body}\n--------------------------\n`);
 };
 
-async function startServer() {
-  const app = express();
-  const PORT = 3000;
+const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
 
-  app.use(cors());
-  app.use(express.json({ limit: '10mb' }));
-
-  app.use((req, res, next) => {
-    console.log(`Request: ${req.method} ${req.url}`);
+// Middleware to check if user is admin
+const requireAdmin = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+  const userId = req.headers['x-user-id'];
+  if (!userId) {
+    return res.status(401).json({ success: false, message: "Authentication required" });
+  }
+  const user = users.find(u => u.id === parseInt(userId as string));
+  if (user && user.role === 'admin') {
     next();
-  });
+  } else {
+    res.status(403).json({ success: false, message: "Admin access required" });
+  }
+};
 
-  // Mock Database
-  let users: User[] = [
-    { 
-      id: 1, 
-      name: "Admin", 
-      email: "admin", 
-      password: bcrypt.hashSync("admin", 10), 
-      wallet_balance: 1000000, 
-      role: "admin", 
-      full_name: "System Administrator", 
-      contact_info: "admin@hdefexchange.com", 
-      profile_image_url: "https://api.dicebear.com/7.x/avataaars/svg?seed=Admin",
-      is_verified: true
-    }
-  ];
+let products: Product[] = [
+  { id: 1, name: "Premium Headphones", description: "High-fidelity wireless noise-cancelling headphones.", image_urls: ["https://picsum.photos/seed/audio/800/600"], quantity: 15, quantity_unit: 1, price: 2500, category: "Electronics", seller_id: 1, status: 'approved', payment_mode: 'coin' },
+  { id: 2, name: "Mechanical Keyboard", description: "Tactile RGB mechanical keyboard for professionals.", image_urls: ["https://picsum.photos/seed/keyboard/800/600"], quantity: 8, quantity_unit: 1, price: 1200, category: "Electronics", seller_id: 1, status: 'approved', payment_mode: 'coin' }
+];
 
-  const sendEmail = (to: string, subject: string, body: string) => {
-    console.log(`\n--- EMAIL NOTIFICATION ---\nTo: ${to}\nSubject: ${subject}\nBody: ${body}\n--------------------------\n`);
-  };
-
-  const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
-
-  // Middleware to check if user is admin
-  const requireAdmin = (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    const userId = req.headers['x-user-id'];
-    if (!userId) {
-      return res.status(401).json({ success: false, message: "Authentication required" });
-    }
-    const user = users.find(u => u.id === parseInt(userId as string));
-    if (user && user.role === 'admin') {
-      next();
-    } else {
-      res.status(403).json({ success: false, message: "Admin access required" });
-    }
-  };
-
-  let products: Product[] = [
-    { id: 1, name: "Premium Headphones", description: "High-fidelity wireless noise-cancelling headphones.", image_urls: ["https://picsum.photos/seed/audio/800/600"], quantity: 15, quantity_unit: 1, price: 2500, category: "Electronics", seller_id: 1, status: 'approved', payment_mode: 'coin' },
-    { id: 2, name: "Mechanical Keyboard", description: "Tactile RGB mechanical keyboard for professionals.", image_urls: ["https://picsum.photos/seed/keyboard/800/600"], quantity: 8, quantity_unit: 1, price: 1200, category: "Electronics", seller_id: 1, status: 'approved', payment_mode: 'coin' }
-  ];
-
-  let transactions: any[] = [];
-  let paymentMode: 'coin' | 'manual' = 'manual';
-  let paymentMethods: PaymentMethod[] = [
-    { id: 1, name: 'bKash', number: '01700000000', instructions: 'Send money to this number.' },
-    { id: 2, name: 'Nagad', number: '01800000000', instructions: 'Send money to this number.' }
-  ];
+let transactions: any[] = [];
+let paymentMode: 'coin' | 'manual' = 'manual';
+let paymentMethods: PaymentMethod[] = [
+  { id: 1, name: 'bKash', number: '01700000000', instructions: 'Send money to this number.' },
+  { id: 2, name: 'Nagad', number: '01800000000', instructions: 'Send money to this number.' }
+];
 
   // Settings Routes
   app.get("/api/settings/payment-mode", (req, res) => {
@@ -739,24 +720,4 @@ async function startServer() {
     });
   });
 
-  // Vite middleware
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
-    });
-  }
-
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
-}
-
-startServer();
+export default app;
