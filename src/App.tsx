@@ -35,6 +35,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar, PieChart, Pie, Cell } from 'recharts';
+import { supabase } from './lib/supabase';
 import { User, Product, Transaction, PaymentMethod } from './types';
 import { ImageUpload } from './components/ImageUpload';
 import { ProfileImageUpload } from './components/ProfileImageUpload';
@@ -966,6 +967,24 @@ const AppContent: React.FC = () => {
   
   const apiFetch = (url: string, options: RequestInit = {}) => baseApiFetch(url, options, user?.id);
 
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user) {
+        // Optionally fetch user profile from API
+      }
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!session?.user) {
+        setUser(null);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
   // Admin Form State
   const [showAddModal, setShowAddModal] = useState(false);
   const [profileForm, setProfileForm] = useState({
@@ -1193,36 +1212,45 @@ const AppContent: React.FC = () => {
 
   const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const endpoint = authConfig.view === 'login' ? '/api/auth/login' : '/api/auth/register';
     try {
-      const res = await apiFetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...authForm, role: authConfig.role })
-      });
-      const data = await res.json();
-      if (data.success) {
-        if (authConfig.view === 'register') {
-          showNotify(data.message, 'success');
-          setAuthConfig({ ...authConfig, view: 'verify_email' });
-        } else {
-          console.log("Logged in user:", data.user);
-          setUser(data.user);
+      if (authConfig.view === 'register') {
+        const { data, error } = await supabase.auth.signUp({
+          email: authForm.email,
+          password: authForm.password,
+          options: {
+            data: { name: authForm.name, role: authConfig.role }
+          }
+        });
+        if (error) throw error;
+        showNotify("Successfully registered. Please check your email for verification.", 'success');
+        setAuthConfig({ ...authConfig, view: 'verify_email' });
+      } else {
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: authForm.email,
+          password: authForm.password
+        });
+        if (error) throw error;
+        
+        // After successful login, fetch the user profile from the API
+        const res = await apiFetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: authForm.email, password: authForm.password, role: authConfig.role })
+        });
+        const userData = await res.json();
+        if (userData.success) {
+          console.log("Logged in user:", userData.user);
+          setUser(userData.user);
           showNotify(`Successfully logged in`, 'success');
           setAuthConfig({ ...authConfig, isOpen: false });
-          setActiveTab(data.user.role === 'admin' ? 'admin' : 'dashboard');
+          setActiveTab(userData.user.role === 'admin' ? 'admin' : 'dashboard');
           setAuthForm({ name: '', email: '', password: '', otp: '', newPassword: '', oldPassword: '' });
-        }
-      } else {
-        if (data.needsVerification) {
-          showNotify(data.message, 'error');
-          setAuthConfig({ ...authConfig, view: 'verify_email' });
         } else {
-          showNotify(data.message || "Authentication failed", 'error');
+          showNotify(userData.message || "Authentication failed", 'error');
         }
       }
-    } catch (err) {
-      showNotify("Server error", 'error');
+    } catch (err: any) {
+      showNotify(err.message || "Authentication failed", 'error');
     }
   };
 
@@ -1254,20 +1282,14 @@ const AppContent: React.FC = () => {
       return;
     }
     try {
-      const res = await apiFetch('/api/auth/forgot-password', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: authForm.email })
+      const { error } = await supabase.auth.resetPasswordForEmail(authForm.email, {
+        redirectTo: `${window.location.origin}/reset-password`
       });
-      const data = await res.json();
-      if (data.success) {
-        showNotify(data.message, 'success');
-        setAuthConfig({ ...authConfig, view: 'reset_password' });
-      } else {
-        showNotify(data.message, 'error');
-      }
-    } catch (err) {
-      showNotify("Server error", 'error');
+      if (error) throw error;
+      showNotify("Password reset email sent", 'success');
+      setAuthConfig({ ...authConfig, view: 'reset_password' });
+    } catch (err: any) {
+      showNotify(err.message || "Server error", 'error');
     }
   };
 
@@ -1321,7 +1343,8 @@ const AppContent: React.FC = () => {
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
     setUser(null);
     setActiveTab('store');
     showNotify("Logged out successfully", 'success');
