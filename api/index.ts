@@ -104,17 +104,48 @@ let paymentMethods: PaymentMethod[] = [
   });
 
   // Auth Routes
+  app.post("/api/auth/sync-user", (req, res) => {
+    const { name, email, role } = req.body;
+    const sanitizedEmail = email.trim().toLowerCase();
+    
+    let user = users.find(u => u.email === sanitizedEmail);
+    
+    if (!user) {
+      const newId = users.length > 0 ? Math.max(...users.map(u => u.id)) + 1 : 1;
+      user = {
+        id: newId,
+        name: name || sanitizedEmail.split('@')[0],
+        email: sanitizedEmail,
+        password: bcrypt.hashSync(Math.random().toString(36), 10), // Random password
+        wallet_balance: role === 'admin' ? 0 : 1000,
+        role: role || 'user',
+        is_verified: true
+      };
+      users.push(user);
+    }
+    
+    res.json({ success: true, user });
+  });
+
   app.post("/api/auth/login", (req, res) => {
     const { email, password, role } = req.body;
-    const user = users.find(u => u.email === email && u.role === role);
+    const user = users.find(u => u.email === email);
     
-    if (user && bcrypt.compareSync(password, user.password)) {
+    if (!user) {
+      return res.status(401).json({ success: false, message: "User does not exist" });
+    }
+
+    if (user.role !== role) {
+      return res.status(401).json({ success: false, message: "Invalid role for this account" });
+    }
+    
+    if (bcrypt.compareSync(password, user.password)) {
       if (!user.is_verified) {
         return res.status(403).json({ success: false, message: "Please verify your email first", needsVerification: true });
       }
       res.json({ success: true, user });
     } else {
-      res.status(401).json({ success: false, message: "Invalid credentials or role" });
+      res.status(401).json({ success: false, message: "Invalid password" });
     }
   });
 

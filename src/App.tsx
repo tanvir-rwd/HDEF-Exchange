@@ -1292,10 +1292,10 @@ const AppContent: React.FC = () => {
       if (loginError) throw loginError;
 
       // Now fetch user data
-      const res = await apiFetch('/api/auth/login', {
+      const res = await apiFetch('/api/auth/sync-user', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: authForm.email, password: authForm.password, role: authConfig.role })
+        body: JSON.stringify({ email: authForm.email, name: authForm.name, role: authConfig.role })
       });
       const userData = await res.json();
       if (userData.success) {
