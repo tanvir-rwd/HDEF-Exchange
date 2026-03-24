@@ -128,11 +128,25 @@ let paymentMethods: PaymentMethod[] = [
   });
 
   app.post("/api/auth/login", (req, res) => {
-    const { email, password, role } = req.body;
-    const user = users.find(u => u.email === email);
+    const { name, email, password, role } = req.body;
+    const sanitizedEmail = email.trim().toLowerCase();
     
+    let user = users.find(u => u.email === sanitizedEmail);
+    
+    // If user not in mock DB, sync them (assuming Supabase auth already passed)
     if (!user) {
-      return res.status(401).json({ success: false, message: "User does not exist" });
+      const newId = users.length > 0 ? Math.max(...users.map(u => u.id)) + 1 : 1;
+      user = {
+        id: newId,
+        name: name || sanitizedEmail.split('@')[0],
+        email: sanitizedEmail,
+        password: bcrypt.hashSync(password, 10),
+        wallet_balance: role === 'admin' ? 0 : 1000,
+        role: role || 'user',
+        is_verified: true
+      };
+      users.push(user);
+      return res.json({ success: true, user });
     }
 
     if (user.role !== role) {

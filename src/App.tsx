@@ -1239,7 +1239,7 @@ const AppContent: React.FC = () => {
         const res = await apiFetch('/api/auth/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: authForm.email, password: authForm.password, role: authConfig.role })
+          body: JSON.stringify({ email: authForm.email, password: authForm.password, role: authConfig.role, name: authForm.name })
         });
         const userData = await res.json();
         if (userData.success) {
