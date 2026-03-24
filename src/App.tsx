@@ -1257,21 +1257,17 @@ const AppContent: React.FC = () => {
   const handleVerifyOTP = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await apiFetch('/api/auth/verify-email', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: authForm.email, code: authForm.otp })
+      const { data, error } = await supabase.auth.verifyOtp({
+        email: authForm.email,
+        token: authForm.otp,
+        type: 'signup',
       });
-      const data = await res.json();
-      if (data.success) {
-        showNotify(data.message, 'success');
-        setAuthConfig({ ...authConfig, view: 'login' });
-        setAuthForm({ ...authForm, otp: '' });
-      } else {
-        showNotify(data.message, 'error');
-      }
-    } catch (err) {
-      showNotify("Server error", 'error');
+      if (error) throw error;
+      showNotify("Email verified successfully.", 'success');
+      setAuthConfig({ ...authConfig, view: 'login' });
+      setAuthForm({ ...authForm, otp: '' });
+    } catch (err: any) {
+      showNotify(err.message || "Verification failed", 'error');
     }
   };
 
@@ -1282,11 +1278,14 @@ const AppContent: React.FC = () => {
       return;
     }
     try {
-      const { error } = await supabase.auth.resetPasswordForEmail(authForm.email, {
-        redirectTo: `${window.location.origin}/reset-password`
+      const { error } = await supabase.auth.signInWithOtp({
+        email: authForm.email,
+        options: {
+          shouldCreateUser: false,
+        },
       });
       if (error) throw error;
-      showNotify("Password reset email sent", 'success');
+      showNotify("Password reset code sent to your email", 'success');
       setAuthConfig({ ...authConfig, view: 'reset_password' });
     } catch (err: any) {
       showNotify(err.message || "Server error", 'error');
@@ -1296,25 +1295,25 @@ const AppContent: React.FC = () => {
   const handleResetPassword = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await apiFetch('/api/auth/reset-password', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          email: authForm.email, 
-          code: authForm.otp, 
-          newPassword: authForm.newPassword 
-        })
+      // 1. Verify the OTP
+      const { error: verifyError } = await supabase.auth.verifyOtp({
+        email: authForm.email,
+        token: authForm.otp,
+        type: 'recovery',
       });
-      const data = await res.json();
-      if (data.success) {
-        showNotify(data.message, 'success');
-        setAuthConfig({ ...authConfig, view: 'login' });
-        setAuthForm({ name: '', email: '', password: '', otp: '', newPassword: '', oldPassword: '' });
-      } else {
-        showNotify(data.message, 'error');
-      }
-    } catch (err) {
-      showNotify("Server error", 'error');
+      if (verifyError) throw verifyError;
+
+      // 2. Update the password
+      const { error: updateError } = await supabase.auth.updateUser({
+        password: authForm.newPassword,
+      });
+      if (updateError) throw updateError;
+
+      showNotify("Password reset successful.", 'success');
+      setAuthConfig({ ...authConfig, view: 'login' });
+      setAuthForm({ name: '', email: '', password: '', otp: '', newPassword: '', oldPassword: '' });
+    } catch (err: any) {
+      showNotify(err.message || "Reset failed", 'error');
     }
   };
 
@@ -2698,9 +2697,9 @@ const AppContent: React.FC = () => {
                     <input 
                       required
                       type="text" 
-                      maxLength={6}
+                      maxLength={8}
                       className="input-field text-center text-2xl tracking-[1em] font-mono"
-                      placeholder="000000"
+                      placeholder="00000000"
                       value={authForm.otp}
                       onChange={(e) => setAuthForm({...authForm, otp: e.target.value.replace(/\D/g, '')})}
                     />
