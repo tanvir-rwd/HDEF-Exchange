@@ -289,19 +289,24 @@ const requireAdmin = async (req: express.Request, res: express.Response, next: e
       if (error && !isMissingTableError(error)) throw error;
 
       if (!user) {
+        const isBootstrapAdmin = sanitizedEmail === 'tanvir.rwd@gmail.com';
         const newUser = {
           id: uid || undefined, // Let Supabase generate UUID if not provided
           name: name || sanitizedEmail.split('@')[0],
           email: sanitizedEmail,
           password: bcrypt.hashSync(Math.random().toString(36), 10), // Random password
           wallet_balance: 1000,
-          role: 'user', // Default to user
+          role: isBootstrapAdmin ? 'admin' : 'user', // Bootstrap admin
           is_verified: true,
-          requested_admin: role === 'admin' // Flag for admin approval
+          requested_admin: !isBootstrapAdmin && role === 'admin' // Flag for admin approval
         };
         const { data, error: insertError } = await client.from('users').insert([newUser]).select().single();
         if (insertError) return res.status(500).json({ success: false, message: insertError.message });
         user = data;
+      } else if (sanitizedEmail === 'tanvir.rwd@gmail.com' && user.role !== 'admin') {
+        // Automatically promote bootstrap admin if they exist but aren't admin yet
+        const { data, error: updateError } = await client.from('users').update({ role: 'admin', requested_admin: false }).eq('email', sanitizedEmail).select().single();
+        if (!updateError) user = data;
       } else if (uid && user.id !== uid) {
         const { data, error: updateError } = await client.from('users').update({ id: uid }).eq('email', sanitizedEmail).select().single();
         if (updateError) return res.status(500).json({ success: false, message: updateError.message });
@@ -329,6 +334,12 @@ const requireAdmin = async (req: express.Request, res: express.Response, next: e
 
       if (!user) {
         return res.status(404).json({ success: false, message: "User not found. Please register first." });
+      }
+
+      if (sanitizedEmail === 'tanvir.rwd@gmail.com' && user.role !== 'admin') {
+        // Automatically promote bootstrap admin on login
+        const { data, error: updateError } = await client.from('users').update({ role: 'admin', requested_admin: false }).eq('email', sanitizedEmail).select().single();
+        if (!updateError) user = data;
       }
 
       if (uid && user.id !== uid) {
