@@ -41,6 +41,10 @@ const parseId = (id: any) => {
   return isNaN(parsed) ? id : parsed;
 };
 
+const isMissingTableError = (error: any) => {
+  return error && (error.code === '42P01' || (error.message && error.message.includes("schema cache")));
+};
+
 const app = express();
 
 app.use(cors());
@@ -59,11 +63,7 @@ const getSetting = async (key: string, defaultValue: any) => {
   try {
     const { data, error } = await getSupabase().from('settings').select('value').eq('key', key).limit(1);
     if (error) {
-      // Handle both "relation does not exist" and "schema cache" errors
-      const isMissingTable = error.code === '42P01' || 
-                            (error.message && error.message.includes("schema cache"));
-      
-      if (!isMissingTable) {
+      if (!isMissingTableError(error)) {
         console.error(`Error fetching setting ${key}:`, error.message);
       }
       return defaultValue;
@@ -182,8 +182,8 @@ const requireAdmin = async (req: express.Request, res: express.Response, next: e
   app.get("/api/health", async (req, res) => {
     try {
       const { data, error } = await getSupabase().from('users').select('count', { count: 'exact', head: true });
-      if (error) throw error;
-      res.json({ success: true, message: "Supabase connected", userCount: data });
+      if (error && !isMissingTableError(error)) throw error;
+      res.json({ success: true, message: "Supabase connected", userCount: data || 0 });
     } catch (err: any) {
       res.status(500).json({ success: false, message: "Supabase connection failed", error: err.message });
     }
@@ -193,11 +193,7 @@ const requireAdmin = async (req: express.Request, res: express.Response, next: e
     try {
       const { data, error } = await getSupabase().from('payment_methods').select('*');
       if (error) {
-        // Handle both "relation does not exist" and "schema cache" errors
-        const isMissingTable = error.code === '42P01' || 
-                              (error.message && error.message.includes("schema cache"));
-
-        if (isMissingTable) {
+        if (isMissingTableError(error)) {
           console.warn("[SUPABASE] payment_methods table missing. Returning defaults.");
           return res.json([
             { id: 1, name: 'bKash', number: '01XXXXXXXXX', instructions: 'Send money to this personal number', type: 'manual' },
@@ -478,7 +474,7 @@ const requireAdmin = async (req: express.Request, res: express.Response, next: e
     try {
       const { data, error } = await getSupabase().from('products').select('*');
       if (error) {
-        if (error.code === '42P01') {
+        if (isMissingTableError(error)) {
           console.warn("[SUPABASE] products table missing. Returning empty array.");
           return res.json([]);
         }
@@ -587,7 +583,7 @@ const requireAdmin = async (req: express.Request, res: express.Response, next: e
         .order('timestamp', { ascending: false });
       
       if (transError) {
-        if (transError.code === '42P01') {
+        if (isMissingTableError(transError)) {
           console.warn("[SUPABASE] transactions table missing. Returning empty array.");
           return res.json([]);
         }
@@ -611,7 +607,7 @@ const requireAdmin = async (req: express.Request, res: express.Response, next: e
       console.log(`API call: /api/admin/users`);
       const { data, error } = await getSupabase().from('users').select('*');
       if (error) {
-        if (error.code === '42P01') {
+        if (isMissingTableError(error)) {
           console.warn("[SUPABASE] users table missing.");
           return res.json([]);
         }
@@ -662,7 +658,7 @@ const requireAdmin = async (req: express.Request, res: express.Response, next: e
         .order('timestamp', { ascending: false });
       
       if (error) {
-        if (error.code === '42P01') {
+        if (isMissingTableError(error)) {
           console.warn("[SUPABASE] transactions table missing.");
           return res.json([]);
         }
