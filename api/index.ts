@@ -281,9 +281,12 @@ const requireAdmin = async (req: express.Request, res: express.Response, next: e
       const { name, email, role, uid } = req.body;
       const sanitizedEmail = email.trim().toLowerCase();
       
-      let { data: user, error } = await getSupabase().from('users').select('*').or(`email.eq.${sanitizedEmail}${uid ? `,id.eq.${uid}` : ''}`).maybeSingle();
+      const client = getSupabase();
+      if (!client) return res.status(500).json({ success: false, message: "Supabase not configured" });
+
+      let { data: user, error } = await client.from('users').select('*').or(`email.eq.${sanitizedEmail}${uid ? `,id.eq.${uid}` : ''}`).maybeSingle();
       
-      if (error && error.code !== '42P01') throw error;
+      if (error && !isMissingTableError(error)) throw error;
 
       if (!user) {
         const newUser = {
@@ -291,15 +294,16 @@ const requireAdmin = async (req: express.Request, res: express.Response, next: e
           name: name || sanitizedEmail.split('@')[0],
           email: sanitizedEmail,
           password: bcrypt.hashSync(Math.random().toString(36), 10), // Random password
-          wallet_balance: role === 'admin' ? 0 : 1000,
-          role: role || 'user',
-          is_verified: true
+          wallet_balance: 1000,
+          role: 'user', // Default to user
+          is_verified: true,
+          requested_admin: role === 'admin' // Flag for admin approval
         };
-        const { data, error: insertError } = await getSupabase().from('users').insert([newUser]).select().single();
+        const { data, error: insertError } = await client.from('users').insert([newUser]).select().single();
         if (insertError) return res.status(500).json({ success: false, message: insertError.message });
         user = data;
       } else if (uid && user.id !== uid) {
-        const { data, error: updateError } = await getSupabase().from('users').update({ id: uid }).eq('email', sanitizedEmail).select().single();
+        const { data, error: updateError } = await client.from('users').update({ id: uid }).eq('email', sanitizedEmail).select().single();
         if (updateError) return res.status(500).json({ success: false, message: updateError.message });
         user = data;
       }
@@ -313,34 +317,28 @@ const requireAdmin = async (req: express.Request, res: express.Response, next: e
 
   app.post("/api/auth/login", async (req, res) => {
     try {
-      const { name, email, password, role, uid } = req.body;
+      const { email, password, role, uid } = req.body;
       const sanitizedEmail = email.trim().toLowerCase();
       
-      let { data: user, error } = await getSupabase().from('users').select('*').or(`email.eq.${sanitizedEmail}${uid ? `,id.eq.${uid}` : ''}`).maybeSingle();
+      const client = getSupabase();
+      if (!client) return res.status(500).json({ success: false, message: "Supabase not configured" });
+
+      let { data: user, error } = await client.from('users').select('*').or(`email.eq.${sanitizedEmail}${uid ? `,id.eq.${uid}` : ''}`).maybeSingle();
       
-      if (error && error.code !== '42P01') throw error;
+      if (error && !isMissingTableError(error)) throw error;
 
       if (!user) {
-        const newUser = {
-          id: uid || undefined,
-          name: name || sanitizedEmail.split('@')[0],
-          email: sanitizedEmail,
-          password: bcrypt.hashSync(password, 10),
-          wallet_balance: role === 'admin' ? 0 : 1000,
-          role: role || 'user',
-          is_verified: true
-        };
-        const { data, error: insertError } = await getSupabase().from('users').insert([newUser]).select().single();
-        if (insertError) return res.status(500).json({ success: false, message: insertError.message });
-        user = data;
-      } else if (uid && user.id !== uid) {
-        const { data, error: updateError } = await getSupabase().from('users').update({ id: uid }).eq('email', sanitizedEmail).select().single();
+        return res.status(404).json({ success: false, message: "User not found. Please register first." });
+      }
+
+      if (uid && user.id !== uid) {
+        const { data, error: updateError } = await client.from('users').update({ id: uid }).eq('email', sanitizedEmail).select().single();
         if (updateError) return res.status(500).json({ success: false, message: updateError.message });
         user = data;
       }
 
       if (user.role !== role) {
-        return res.status(401).json({ success: false, message: "Invalid role for this account" });
+        return res.status(401).json({ success: false, message: `Invalid role. This account is registered as a ${user.role}.` });
       }
       
       if (bcrypt.compareSync(password, user.password)) {
@@ -363,8 +361,11 @@ const requireAdmin = async (req: express.Request, res: express.Response, next: e
       const sanitizedName = name.trim().replace(/[<>]/g, '');
       const sanitizedEmail = email.trim().replace(/[<>]/g, '').toLowerCase();
 
-      const { data: existingUser, error: fetchError } = await getSupabase().from('users').select('id').eq('email', sanitizedEmail).maybeSingle();
-      if (fetchError && fetchError.code !== '42P01') throw fetchError;
+      const client = getSupabase();
+      if (!client) return res.status(500).json({ success: false, message: "Supabase not configured" });
+
+      const { data: existingUser, error: fetchError } = await client.from('users').select('id').eq('email', sanitizedEmail).maybeSingle();
+      if (fetchError && !isMissingTableError(fetchError)) throw fetchError;
       
       if (existingUser) {
         return res.status(400).json({ success: false, message: "User already exists" });
@@ -377,14 +378,15 @@ const requireAdmin = async (req: express.Request, res: express.Response, next: e
         name: sanitizedName,
         email: sanitizedEmail,
         password: bcrypt.hashSync(password, 10),
-        wallet_balance: role === 'admin' ? 0 : 1000,
-        role,
+        wallet_balance: 1000,
+        role: 'user', // Everyone starts as user
         is_verified: false,
         verification_code: otp,
-        verification_expiry: expiry
+        verification_expiry: expiry,
+        requested_admin: role === 'admin'
       };
 
-      const { data, error } = await getSupabase().from('users').insert([newUser]).select().single();
+      const { data, error } = await client.from('users').insert([newUser]).select().single();
       if (error) return res.status(500).json({ success: false, message: error.message });
 
       sendEmail(email, "Account Verification Code", `Your verification code is: ${otp}. It expires in 10 minutes.`);
@@ -637,9 +639,38 @@ const requireAdmin = async (req: express.Request, res: express.Response, next: e
     }
   });
 
+  app.post("/api/admin/approve-admin", requireAdmin, async (req, res) => {
+    try {
+      const { userId, approve } = req.body;
+      const client = getSupabase();
+      if (!client) return res.status(500).json({ success: false, message: "Supabase not configured" });
+
+      const updateData = approve ? { role: 'admin', requested_admin: false } : { requested_admin: false };
+      const { data, error } = await client.from('users').update(updateData).eq('id', userId).select().single();
+      
+      if (error) return res.status(500).json({ success: false, message: error.message });
+      res.json({ success: true, message: approve ? "User promoted to admin" : "Admin request rejected", user: data });
+    } catch (error: any) {
+      logError("approve-admin", error);
+      res.status(500).json({ success: false, message: "Internal server error" });
+    }
+  });
+
+  app.get("/api/admin/pending-admins", requireAdmin, async (req, res) => {
+    try {
+      const client = getSupabase();
+      if (!client) return res.status(500).json({ success: false, message: "Supabase not configured" });
+
+      const { data, error } = await client.from('users').select('*').eq('requested_admin', true);
+      if (error) return res.status(500).json({ success: false, message: error.message });
+      res.json(data || []);
+    } catch (error: any) {
+      logError("pending-admins", error);
+      res.status(500).json({ success: false, message: "Internal server error" });
+    }
+  });
   app.get("/api/admin/users", requireAdmin, async (req, res) => {
     try {
-      console.log(`API call: /api/admin/users`);
       const { data, error } = await getSupabase().from('users').select('*');
       if (error) {
         if (isMissingTableError(error)) {

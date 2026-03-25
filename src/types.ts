@@ -18,6 +18,7 @@ export interface User {
   profile_details?: string;
   profile_image_url?: string;
   is_verified: boolean;
+  requested_admin?: boolean;
   verification_code?: string;
   verification_expiry?: number;
   reset_code?: string;

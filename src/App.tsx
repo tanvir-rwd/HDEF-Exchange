@@ -31,7 +31,9 @@ import {
   Camera,
   Upload,
   CreditCard,
-  Menu
+  Menu,
+  UserPlus,
+  RefreshCw
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar, PieChart, Pie, Cell } from 'recharts';
@@ -862,15 +864,122 @@ const UserManagementView = ({ showNotify, apiFetch }: { showNotify: (msg: string
                   </div>
                 </td>
                 <td className="py-4">
-                  <span className={`px-2 py-1 rounded-full text-xs font-medium ${u.is_verified ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
-                    {u.is_verified ? 'Verified' : 'Unverified'}
-                  </span>
+                  <div className="flex flex-col gap-1">
+                    <span className={`px-2 py-1 rounded-full text-xs font-medium w-fit ${u.is_verified ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                      {u.is_verified ? 'Verified' : 'Unverified'}
+                    </span>
+                    {u.requested_admin && u.role === 'user' && (
+                      <span className="px-2 py-1 rounded-full text-xs font-medium bg-indigo-100 text-indigo-700 w-fit">
+                        Pending Admin
+                      </span>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+    </div>
+  );
+};
+
+const PendingAdminsView = ({ showNotify, apiFetch }: { showNotify: (msg: string, type: 'success' | 'error') => void, apiFetch: any }) => {
+  const [pendingUsers, setPendingUsers] = useState<User[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  const fetchPendingAdmins = async () => {
+    try {
+      setIsLoading(true);
+      const res = await apiFetch('/api/admin/pending-admins');
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        setPendingUsers(data);
+      }
+    } catch (error) {
+      showNotify("Failed to load pending admins", "error");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchPendingAdmins();
+  }, []);
+
+  const handleApprove = async (userId: string, approve: boolean) => {
+    try {
+      const res = await apiFetch('/api/admin/approve-admin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, approve })
+      });
+      const data = await res.json();
+      if (data.success) {
+        showNotify(data.message, "success");
+        fetchPendingAdmins();
+      } else {
+        showNotify(data.message, "error");
+      }
+    } catch (error) {
+      showNotify("Failed to process request", "error");
+    }
+  };
+
+  if (isLoading) return <div className="p-8 text-center text-slate-500">Loading pending requests...</div>;
+
+  return (
+    <div className="bg-white rounded-3xl border border-slate-100 p-8 card-shadow">
+      <div className="flex items-center justify-between mb-6">
+        <h3 className="text-xl font-bold text-slate-900">Pending Admin Requests</h3>
+        <button onClick={fetchPendingAdmins} className="p-2 text-slate-500 hover:text-emerald-600 transition-colors">
+          <RefreshCw className="w-5 h-5" />
+        </button>
+      </div>
+      {pendingUsers.length === 0 ? (
+        <div className="text-center py-12 text-slate-500">No pending admin requests</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="border-b border-slate-100 text-sm text-slate-500">
+                <th className="pb-4 font-medium">User</th>
+                <th className="pb-4 font-medium">Email</th>
+                <th className="pb-4 font-medium">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="text-sm">
+              {pendingUsers.map((u) => (
+                <tr key={u.id} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/50 transition-colors">
+                  <td className="py-4">
+                    <div className="flex items-center gap-3">
+                      <img src={u.profile_image_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${u.name}`} alt={u.name} className="w-8 h-8 rounded-full bg-slate-100" />
+                      <p className="font-medium text-slate-900">{u.name}</p>
+                    </div>
+                  </td>
+                  <td className="py-4 text-slate-600">{u.email}</td>
+                  <td className="py-4">
+                    <div className="flex items-center gap-2">
+                      <button 
+                        onClick={() => handleApprove(u.id, true)}
+                        className="px-3 py-1.5 bg-emerald-100 text-emerald-700 rounded-lg text-xs font-medium hover:bg-emerald-200 transition-colors"
+                      >
+                        Approve
+                      </button>
+                      <button 
+                        onClick={() => handleApprove(u.id, false)}
+                        className="px-3 py-1.5 bg-rose-100 text-rose-700 rounded-lg text-xs font-medium hover:bg-rose-200 transition-colors"
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 };
@@ -1004,7 +1113,7 @@ const AppContent: React.FC = () => {
 
   // Dashboard Sidebar State
   const [dashboardView, setDashboardView] = useState<'overview' | 'history' | 'settings' | 'security' | 'tracking' | 'sell' | 'assets'>('overview');
-  const [adminView, setAdminView] = useState<'products' | 'users' | 'settings' | 'analytics' | 'buy' | 'assets' | 'orders' | 'payment-methods' | 'payment-verification' | 'security' | 'payment-settings'>('products');
+  const [adminView, setAdminView] = useState<'products' | 'users' | 'settings' | 'analytics' | 'buy' | 'assets' | 'orders' | 'payment-methods' | 'payment-verification' | 'security' | 'payment-settings' | 'pending-admins'>('products');
   const [enabledPaymentMethods, setEnabledPaymentMethods] = useState<number[]>([]);
   const [trackingId, setTrackingId] = useState('');
   const [trackingResult, setTrackingResult] = useState<Transaction | null>(null);
@@ -2323,6 +2432,9 @@ const AppContent: React.FC = () => {
                         <button onClick={() => setAdminView('users')} className={`w-auto md:w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors whitespace-nowrap ${adminView === 'users' ? 'bg-emerald-50 text-emerald-700' : 'text-slate-600 hover:bg-slate-50'}`}>
                           <Users size={18} /> Manage Users
                         </button>
+                        <button onClick={() => setAdminView('pending-admins')} className={`w-auto md:w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors whitespace-nowrap ${adminView === 'pending-admins' ? 'bg-emerald-50 text-emerald-700' : 'text-slate-600 hover:bg-slate-50'}`}>
+                          <UserPlus size={18} /> Pending Admins
+                        </button>
                         <button onClick={() => setAdminView('analytics')} className={`w-auto md:w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors whitespace-nowrap ${adminView === 'analytics' ? 'bg-emerald-50 text-emerald-700' : 'text-slate-600 hover:bg-slate-50'}`}>
                           <LayoutDashboard size={18} /> Analytics
                         </button>
@@ -2546,6 +2658,9 @@ const AppContent: React.FC = () => {
                   )}
                   {adminView === 'users' && (
                     <UserManagementView showNotify={showNotify} apiFetch={apiFetch} />
+                  )}
+                  {adminView === 'pending-admins' && (
+                    <PendingAdminsView showNotify={showNotify} apiFetch={apiFetch} />
                   )}
                   {adminView === 'analytics' && (
                     <AnalyticsView products={products} transactions={transactions} />
