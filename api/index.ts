@@ -42,7 +42,21 @@ const parseId = (id: any) => {
 };
 
 const isMissingTableError = (error: any) => {
-  return error && (error.code === '42P01' || (error.message && error.message.includes("schema cache")));
+  if (!error) return false;
+  const code = error.code;
+  const message = (error.message || "").toLowerCase();
+  const details = (error.details || "").toLowerCase();
+  const hint = (error.hint || "").toLowerCase();
+  
+  return code === '42P01' || 
+         code === 'PGRST103' || // Another common PostgREST error code for missing resources
+         message.includes("schema cache") || 
+         message.includes("relation does not exist") ||
+         message.includes("could not find the table") ||
+         details.includes("schema cache") ||
+         details.includes("relation does not exist") ||
+         hint.includes("schema cache") ||
+         hint.includes("relation does not exist");
 };
 
 const app = express();
