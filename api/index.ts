@@ -6,19 +6,17 @@ import { User, Product, PaymentMethod } from "../src/types";
 
 let supabaseClient: SupabaseClient | null = null;
 
-const getSupabase = (): SupabaseClient => {
+const getSupabase = (): SupabaseClient | null => {
   if (!supabaseClient) {
     const supabaseUrl = process.env.VITE_SUPABASE_URL;
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
     if (!supabaseUrl || !supabaseServiceKey) {
-      console.error("[SUPABASE] Missing VITE_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY environment variables.");
-      throw new Error("Supabase credentials are not configured.");
+      console.warn("[SUPABASE] Missing VITE_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY environment variables.");
+      return null;
     }
 
     console.log(`[SUPABASE] Initializing with URL: ${supabaseUrl ? 'SET' : 'NOT SET'}`);
-    console.log(`[SUPABASE] Initializing with Service Key: ${supabaseServiceKey ? 'SET' : 'NOT SET'}`);
-    
     supabaseClient = createClient(supabaseUrl, supabaseServiceKey);
   }
   return supabaseClient;
@@ -75,7 +73,10 @@ app.use((req, res, next) => {
 // Helper to get settings
 const getSetting = async (key: string, defaultValue: any) => {
   try {
-    const { data, error } = await getSupabase().from('settings').select('value').eq('key', key).limit(1);
+    const client = getSupabase();
+    if (!client) return defaultValue;
+    
+    const { data, error } = await client.from('settings').select('value').eq('key', key).limit(1);
     if (error) {
       if (!isMissingTableError(error)) {
         console.error(`Error fetching setting ${key}:`, error.message);
@@ -93,18 +94,21 @@ const getSetting = async (key: string, defaultValue: any) => {
 // Helper to update settings
 const updateSetting = async (key: string, value: any) => {
   try {
-    const { data: existing, error: fetchError } = await getSupabase().from('settings').select('id').eq('key', key).limit(1);
+    const client = getSupabase();
+    if (!client) return false;
     
-    if (fetchError && fetchError.code !== '42P01') {
+    const { data: existing, error: fetchError } = await client.from('settings').select('id').eq('key', key).limit(1);
+    
+    if (fetchError && !isMissingTableError(fetchError)) {
       console.error(`Error checking existing setting ${key}:`, fetchError.message);
     }
 
     let error;
     if (existing && existing.length > 0) {
-      const res = await getSupabase().from('settings').update({ value }).eq('key', key);
+      const res = await client.from('settings').update({ value }).eq('key', key);
       error = res.error;
     } else {
-      const res = await getSupabase().from('settings').insert([{ key, value }]);
+      const res = await client.from('settings').insert([{ key, value }]);
       error = res.error;
     }
     
@@ -195,7 +199,11 @@ const requireAdmin = async (req: express.Request, res: express.Response, next: e
 
   app.get("/api/health", async (req, res) => {
     try {
-      const { data, error } = await getSupabase().from('users').select('count', { count: 'exact', head: true });
+      const client = getSupabase();
+      if (!client) {
+        return res.json({ success: false, message: "Supabase credentials not configured" });
+      }
+      const { data, error } = await client.from('users').select('count', { count: 'exact', head: true });
       if (error && !isMissingTableError(error)) throw error;
       res.json({ success: true, message: "Supabase connected", userCount: data || 0 });
     } catch (err: any) {
@@ -205,22 +213,30 @@ const requireAdmin = async (req: express.Request, res: express.Response, next: e
 
   app.get("/api/payment-methods", async (req, res) => {
     try {
-      const { data, error } = await getSupabase().from('payment_methods').select('*');
+      const client = getSupabase();
+      const defaultMethods = [
+        { id: 1, name: 'bKash', number: '01XXXXXXXXX', instructions: 'Send money to this personal number', type: 'manual' },
+        { id: 2, name: 'Nagad', number: '01XXXXXXXXX', instructions: 'Send money to this personal number', type: 'manual' },
+        { id: 3, name: 'Rocket', number: '01XXXXXXXXX', instructions: 'Send money to this personal number', type: 'manual' }
+      ];
+
+      if (!client) {
+        console.warn("[SUPABASE] Credentials missing. Returning defaults.");
+        return res.json(defaultMethods);
+      }
+
+      const { data, error } = await client.from('payment_methods').select('*');
       if (error) {
         if (isMissingTableError(error)) {
           console.warn("[SUPABASE] payment_methods table missing. Returning defaults.");
-          return res.json([
-            { id: 1, name: 'bKash', number: '01XXXXXXXXX', instructions: 'Send money to this personal number', type: 'manual' },
-            { id: 2, name: 'Nagad', number: '01XXXXXXXXX', instructions: 'Send money to this personal number', type: 'manual' },
-            { id: 3, name: 'Rocket', number: '01XXXXXXXXX', instructions: 'Send money to this personal number', type: 'manual' }
-          ]);
+          return res.json(defaultMethods);
         }
         throw error;
       }
       res.json(data || []);
     } catch (error: any) {
       logError("fetching payment methods", error);
-      res.status(500).json({ success: false, message: "Failed to fetch payment methods" });
+      res.status(500).json({ success: false, message: "Failed to fetch payment methods", error: error.message });
     }
   });
 
@@ -486,7 +502,12 @@ const requireAdmin = async (req: express.Request, res: express.Response, next: e
 
   app.get("/api/products", async (req, res) => {
     try {
-      const { data, error } = await getSupabase().from('products').select('*');
+      const client = getSupabase();
+      if (!client) {
+        console.warn("[SUPABASE] Credentials missing. Returning empty array.");
+        return res.json([]);
+      }
+      const { data, error } = await client.from('products').select('*');
       if (error) {
         if (isMissingTableError(error)) {
           console.warn("[SUPABASE] products table missing. Returning empty array.");
@@ -497,7 +518,7 @@ const requireAdmin = async (req: express.Request, res: express.Response, next: e
       res.json(data || []);
     } catch (error: any) {
       logError("fetching products", error);
-      res.status(500).json({ success: false, message: "Failed to fetch products" });
+      res.status(500).json({ success: false, message: "Failed to fetch products", error: error.message });
     }
   });
 
