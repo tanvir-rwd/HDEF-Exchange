@@ -1262,12 +1262,15 @@ const requireAdmin = async (req: express.Request, res: express.Response, next: e
         console.log("[BOOTSTRAP] Creating admin user...");
         const newUser = {
           name: 'tanvir',
+          full_name: 'Tanvir Ahmed',
           email: adminEmail,
           password: bcrypt.hashSync(adminPass, 10),
-          wallet_balance: 1000,
+          wallet_balance: 10000,
           role: 'admin',
           is_verified: true,
-          requested_admin: false
+          requested_admin: false,
+          whatsapp_number: '+8801700000000',
+          profile_details: 'System Administrator'
         };
         const { error: insertError } = await client.from('users').insert([newUser]);
         if (insertError) {
@@ -1276,11 +1279,15 @@ const requireAdmin = async (req: express.Request, res: express.Response, next: e
           console.log("[BOOTSTRAP] Admin user created successfully.");
         }
       } else {
-        // Ensure they are admin
-        if (user.role !== 'admin') {
-          console.log("[BOOTSTRAP] Promoting existing user to admin...");
-          await client.from('users').update({ role: 'admin', requested_admin: false }).eq('email', adminEmail);
-        }
+        // Ensure they are admin and have full details
+        console.log("[BOOTSTRAP] Updating existing admin user details...");
+        await client.from('users').update({ 
+          role: 'admin', 
+          requested_admin: false,
+          is_verified: true,
+          full_name: user.full_name || 'Tanvir Ahmed',
+          profile_details: user.profile_details || 'System Administrator'
+        }).eq('email', adminEmail);
       }
     } catch (err: any) {
       console.error("[BOOTSTRAP] Exception during admin bootstrap:", err.message);
