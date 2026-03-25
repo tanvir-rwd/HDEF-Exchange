@@ -1242,4 +1242,52 @@ const requireAdmin = async (req: express.Request, res: express.Response, next: e
     });
   });
 
+  // Bootstrap Admin User
+  const bootstrapAdmin = async () => {
+    try {
+      const client = getSupabase();
+      if (!client) return;
+
+      const adminEmail = 'tanvir.rwd@gmail.com';
+      const adminPass = 'Tanvir2000';
+      
+      const { data: user, error } = await client.from('users').select('*').eq('email', adminEmail).maybeSingle();
+      
+      if (error && !isMissingTableError(error)) {
+        console.error("[BOOTSTRAP] Error checking admin user:", error.message);
+        return;
+      }
+
+      if (!user) {
+        console.log("[BOOTSTRAP] Creating admin user...");
+        const newUser = {
+          name: 'tanvir',
+          email: adminEmail,
+          password: bcrypt.hashSync(adminPass, 10),
+          wallet_balance: 1000,
+          role: 'admin',
+          is_verified: true,
+          requested_admin: false
+        };
+        const { error: insertError } = await client.from('users').insert([newUser]);
+        if (insertError) {
+          console.error("[BOOTSTRAP] Error creating admin user:", insertError.message);
+        } else {
+          console.log("[BOOTSTRAP] Admin user created successfully.");
+        }
+      } else {
+        // Ensure they are admin
+        if (user.role !== 'admin') {
+          console.log("[BOOTSTRAP] Promoting existing user to admin...");
+          await client.from('users').update({ role: 'admin', requested_admin: false }).eq('email', adminEmail);
+        }
+      }
+    } catch (err: any) {
+      console.error("[BOOTSTRAP] Exception during admin bootstrap:", err.message);
+    }
+  };
+
+  // Run bootstrap
+  bootstrapAdmin();
+
 export default app;
