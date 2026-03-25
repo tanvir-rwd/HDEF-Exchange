@@ -159,12 +159,23 @@ const SellSection = ({ user, showNotify, paymentMode, apiFetch, fetchProducts }:
       const res = await apiFetch('/api/sell-request', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...formData, seller_id: user.id, status: 'pending', payment_mode: paymentMode })
+        body: JSON.stringify(formData)
       });
       const data = await res.json();
       if (data.success) {
         showNotify("Sell request submitted successfully!", "success");
-        setFormData({ name: '', description: '', image_urls: [], quantity: 0, quantity_unit: 1, price: 0, price_type: 'BDT', category: '' });
+        setFormData({ 
+          name: '', 
+          description: '', 
+          image_urls: [], 
+          quantity: 0, 
+          quantity_unit: 1, 
+          price: 0, 
+          price_type: 'BDT', 
+          discount: 0,
+          payment_mode: paymentMode,
+          category: '' 
+        });
         if (fetchProducts) fetchProducts();
       } else {
         showNotify(data.message || "Failed to submit sell request", "error");
@@ -1184,10 +1195,17 @@ const AppContent: React.FC = () => {
   const fetchPaymentMethods = async () => {
     try {
       const res = await apiFetch('/api/payment-methods');
+      if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
       const data = await res.json();
-      setPaymentMethods(data);
+      if (Array.isArray(data)) {
+        setPaymentMethods(data);
+      } else {
+        console.error("Expected array for payment methods, got:", data);
+        setPaymentMethods([]);
+      }
     } catch (err) {
-      console.error("Failed to load payment methods");
+      console.error("Failed to load payment methods:", err);
+      // showNotify("Failed to load payment methods", 'error'); // Silent fail for background fetch
     }
   };
 
@@ -1195,9 +1213,16 @@ const AppContent: React.FC = () => {
     setLoading(true);
     try {
       const res = await apiFetch('/api/products');
+      if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
       const data = await res.json();
-      setProducts(data);
+      if (Array.isArray(data)) {
+        setProducts(data);
+      } else {
+        console.error("Expected array for products, got:", data);
+        setProducts([]);
+      }
     } catch (err) {
+      console.error("Failed to load products:", err);
       showNotify("Failed to load products", 'error');
     } finally {
       setLoading(false);
@@ -1626,14 +1651,25 @@ const AppContent: React.FC = () => {
       const res = await apiFetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...formData, payment_mode: paymentMode })
+        body: JSON.stringify(formData)
       });
       const data = await res.json();
       if (res.ok && data.success) {
         showNotify(editingProduct ? "Product updated" : "Product added", 'success');
         setShowAddModal(false);
         setEditingProduct(null);
-        setFormData({ name: '', description: '', image_urls: [], quantity: 0, quantity_unit: 1, price: 0, price_type: 'BDT', discount: 0, category: '' });
+        setFormData({ 
+          name: '', 
+          description: '', 
+          image_urls: [], 
+          quantity: 0, 
+          quantity_unit: 1, 
+          price: 0, 
+          price_type: 'BDT', 
+          discount: 0, 
+          payment_mode: paymentMode,
+          category: '' 
+        });
         setCategoryModified(false);
         fetchProducts();
       } else {
@@ -3058,19 +3094,32 @@ const AppContent: React.FC = () => {
                     />
                   </div>
                 </div>
-                {paymentMode === 'manual' && (
+                <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-sm font-bold text-slate-700 mb-1">Price Type</label>
+                    <label className="block text-sm font-bold text-slate-700 mb-1">Payment Mode</label>
                     <select 
                       className="input-field"
-                      value={formData.price_type}
-                      onChange={(e) => setFormData({...formData, price_type: e.target.value as 'BDT' | 'USDT'})}
+                      value={formData.payment_mode}
+                      onChange={(e) => setFormData({...formData, payment_mode: e.target.value as 'coin' | 'manual'})}
                     >
-                      <option value="BDT">BDT Price</option>
-                      <option value="USDT">USDT Price</option>
+                      <option value="coin">Coin Payment</option>
+                      <option value="manual">Manual Payment</option>
                     </select>
                   </div>
-                )}
+                  {formData.payment_mode === 'manual' && (
+                    <div>
+                      <label className="block text-sm font-bold text-slate-700 mb-1">Price Type</label>
+                      <select 
+                        className="input-field"
+                        value={formData.price_type}
+                        onChange={(e) => setFormData({...formData, price_type: e.target.value as 'BDT' | 'USDT'})}
+                      >
+                        <option value="BDT">BDT Price</option>
+                        <option value="USDT">USDT Price</option>
+                      </select>
+                    </div>
+                  )}
+                </div>
                 <div>
                   <label className="block text-sm font-bold text-slate-700 mb-1">Description</label>
                   <textarea 
@@ -3113,7 +3162,7 @@ const AppContent: React.FC = () => {
                   </div>
                   <div>
                     <label className="block text-sm font-bold text-slate-700 mb-1">
-                      Price ({paymentMode === 'coin' ? 'Coins' : formData.price_type})
+                      Price ({formData.payment_mode === 'coin' ? 'Coins' : formData.price_type})
                     </label>
                     <input 
                       required
@@ -3375,9 +3424,22 @@ const AppContent: React.FC = () => {
                       <Wallet size={18} className="shrink-0 mt-0.5" />
                       <div>
                         <strong>Manual Payment Active</strong>
-                        <p className="mt-1 opacity-80">Coin payments are currently disabled. Please transfer the total amount to our bKash/Nagad number: <strong>01XXXXXXXXX</strong> and enter the Transaction ID below.</p>
+                        <p className="mt-1 opacity-80">Coin payments are currently disabled. Please transfer the total amount to one of our payment methods below and enter the Transaction ID.</p>
                       </div>
                     </div>
+                    
+                    {paymentMethods.length > 0 && (
+                      <div className="space-y-2">
+                        <p className="font-bold text-xs uppercase tracking-wider text-indigo-900">Available Methods:</p>
+                        {paymentMethods.map((m: any) => (
+                          <div key={m.id} className="bg-white/50 p-3 rounded-xl border border-indigo-100">
+                            <p className="font-bold text-indigo-900">{m.name}: {m.number}</p>
+                            <p className="text-[10px] opacity-70">{m.instructions}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
                     <div>
                       <label className="block text-xs font-bold text-indigo-900 uppercase tracking-wider mb-1">Payment Screenshot</label>
                       <ImageUpload 
